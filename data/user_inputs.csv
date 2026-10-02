@@ -1,0 +1,2 @@
+Ticker,EPS_est,TTM_EPS,PE_Ratio,Forward_PE,Open,High,Low,Volume,daily_change,w1_change,m1_change,m3_change,y1_change,wk52_high,wk52_low,sma20_change,sma50_change,sma200_change,rsi_14,volatility_wk,volatility_1m,shifted_rep_eps,surprise_shift1,high_low_range,vol_log,Quarter,Sector,Industry,HeadquartersState,predicted_prob
+PLAY,0.91,1.01,22.75,10.09,22.4,23.94,22.01,918760.0,0.02,-0.0004,-0.0444,-0.1994,-0.2498,43.73,15.08,-0.0586,-0.1698,-0.0988,38.86,5.06,4.57,,,0.08616071428571428,13.730781302226626,3,MISSING,MISSING,Texas,0.49193851128949384

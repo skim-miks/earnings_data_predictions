@@ -1,0 +1,8 @@
+# Python
+.venv-3.10/
+__pycache__/
+catboost_info/
+
+# Over GitHub's 100 MB file limit
+data/stocks_df.csv
+data/stocks_df2.csv
