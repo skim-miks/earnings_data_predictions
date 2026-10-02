@@ -164,6 +164,13 @@ def collect_profiles() -> None:
     tickers = load_tickers()
     with ThreadPoolExecutor(max_workers=4) as pool:
         profiles = [p for p in pool.map(fetch_profile, tickers) if p]
+    # Yahoo sometimes returns an empty profile when requests come too fast, so
+    # anything missing gets a second, slower pass. Delisted tickers stay missing.
+    found = {p["ticker"] for p in profiles}
+    for ticker in [t for t in tickers if t not in found]:
+        time.sleep(1)
+        if profile := fetch_profile(ticker):
+            profiles.append(profile)
     df = pd.DataFrame(profiles)
     df["as_of"] = pd.Timestamp.now().strftime("%Y-%m-%d")
     RAW.mkdir(parents=True, exist_ok=True)
