@@ -1,0 +1,13 @@
+[project]
+name = "earnings-data-predictions"
+version = "0.2.0"
+description = "Predict post-earnings stock moves"
+requires-python = ">=3.11"
+dependencies = [
+    "yfinance>=1.0",
+    "pandas>=2.2",
+    "pyarrow>=16",
+    "lxml>=5",
+    "requests>=2.31",
+    "vaderSentiment>=3.3",
+]

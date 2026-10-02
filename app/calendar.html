@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earnings Calendar</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e2e5ea; --text: #16191f; --muted: #6a7280;
+    --accent: #2456d6; --today: #eef3ff; --shade: rgba(0, 0, 0, .35);
+    --bmo-bg: #fff3d6; --bmo-fg: #7a5200; --amc-bg: #e4e9ff; --amc-fg: #2a3a9a;
+    --during-bg: #e6f4ea; --during-fg: #1d6b37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111318; --panel: #1a1d24; --line: #2b303a; --text: #e8eaee; --muted: #9099a8;
+      --accent: #7da2ff; --today: #1c2540; --shade: rgba(0, 0, 0, .55);
+      --bmo-bg: #453510; --bmo-fg: #ffd98a; --amc-bg: #262f63; --amc-fg: #c3ccff;
+      --during-bg: #173622; --during-fg: #9fe0b3;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: center; padding: 12px 16px;
+           border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  h1 { font-size: 17px; margin: 0; }
+  .quarter { color: var(--muted); font-size: 13px; margin-right: 6px; }
+  .nav { display: flex; align-items: center; gap: 6px; }
+  .nav strong { min-width: 170px; text-align: center; font-size: 15px; }
+  button, select, input { font: inherit; color: var(--text); background: var(--panel);
+                          border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  .toggle { display: flex; }
+  .toggle button { border-radius: 0; }
+  .toggle button:first-child { border-radius: 6px 0 0 6px; }
+  .toggle button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+  .toggle button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input[type=search] { width: 180px; }
+  .legend { display: flex; gap: 10px; margin-left: auto; color: var(--muted); font-size: 12px; align-items: center; }
+  .chip { display: inline-block; border-radius: 4px; padding: 1px 6px; font-size: 12px; font-weight: 600; }
+  .bmo { background: var(--bmo-bg); color: var(--bmo-fg); }
+  .amc { background: var(--amc-bg); color: var(--amc-fg); }
+  .during { background: var(--during-bg); color: var(--during-fg); }
+  main { padding: 14px 16px; }
+  .grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+  .dow { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 0 4px; }
+  .day { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 112px;
+         padding: 6px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .day:hover { border-color: var(--accent); }
+  .day.out { opacity: .4; }
+  .day.today { background: var(--today); }
+  .day-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .day-num { font-weight: 600; }
+  .count { color: var(--muted); font-size: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 3px; }
+  .more { color: var(--muted); font-size: 12px; }
+  .week .day { min-height: 60vh; }
+  .week h3 { margin: 6px 0 2px; }
+  .wrow { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+  .wrow .name { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 14px 0 6px; font-weight: 600; }
+  #shade { position: fixed; inset: 0; background: var(--shade); z-index: 3; display: none; }
+  #detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); background: var(--panel);
+            border-left: 1px solid var(--line); z-index: 4; padding: 16px; overflow: auto; display: none; }
+  body.open #shade, body.open #detail { display: block; }
+  #detail h2 { font-size: 16px; margin: 0 40px 2px 0; }
+  #detail .sub { color: var(--muted); font-size: 12px; }
+  #close { position: absolute; top: 12px; right: 12px; }
+  .row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 8px; padding: 6px 0;
+         border-top: 1px solid var(--line); align-items: baseline; }
+  .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .eps { color: var(--muted); font-size: 12px; white-space: nowrap; text-align: right; }
+  .row { grid-template-columns: 58px minmax(0, 1fr) auto auto; }
+  .row button { padding: 2px 8px; font-size: 12px; }
+  .reddit { grid-column: 1 / -1; font-size: 12px; border-left: 2px solid var(--line); padding: 2px 0 4px 10px; }
+  .reddit .stat { color: var(--muted); margin-bottom: 4px; }
+  .reddit .err { color: #c0392b; }
+  .reddit a { color: var(--accent); text-decoration: none; }
+  .reddit a:hover { text-decoration: underline; }
+  .reddit .post { padding: 3px 0; }
+  .reddit .pmeta { color: var(--muted); }
+  .reddit .sent { margin-bottom: 6px; }
+  .pos { color: var(--during-fg); } .neg { color: #d9534f; } .neu { color: var(--muted); }
+  footer { color: var(--muted); font-size: 12px; padding: 0 16px 20px; }
+  @media (max-width: 640px) {
+    .day { min-height: 84px; padding: 4px; }
+    .chip { padding: 1px 3px; font-size: 11px; }
+    .legend { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Earnings Calendar</h1>
+  <span class="quarter" id="quarter"></span>
+  <div class="toggle">
+    <button id="view-month">Month</button><button id="view-week">Week</button>
+  </div>
+  <div class="nav">
+    <button id="prev" aria-label="Previous">&larr;</button>
+    <strong id="title"></strong>
+    <button id="next" aria-label="Next">&rarr;</button>
+    <button id="today">Today</button>
+  </div>
+  <input id="search" type="search" placeholder="Ticker or company">
+  <select id="sector"><option value="">All sectors</option></select>
+  <div class="legend">
+    <span><span class="chip bmo">ABC</span> before open</span>
+    <span><span class="chip amc">ABC</span> after close</span>
+  </div>
+</header>
+<main>
+  <div class="grid" id="dow"></div>
+  <div class="grid" id="grid" style="margin-top:6px"></div>
+</main>
+<footer id="footer"></footer>
+<div id="shade"></div>
+<aside id="detail"><button id="close" aria-label="Close">&times;</button><div id="detail-body"></div></aside>
+
+<script src="calendar_data.js"></script>
+<script>
+const DATA = window.EARNINGS_CALENDAR || { events: [], generated: "never" };
+const MAX_CHIPS = 8;
+const SESSIONS = ["bmo", "during", "amc"];
+const SESSION_LABEL = { bmo: "Before open", amc: "After close", during: "During session" };
+const el = id => document.getElementById(id);
+const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const parse = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const monday = d => { const m = new Date(d); m.setDate(m.getDate() - ((m.getDay() + 6) % 7)); m.setHours(0, 0, 0, 0); return m; };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const todayIso = iso(new Date());
+
+// Navigation is limited to the quarter the data covers.
+const qStart = parse(DATA.quarter_start || todayIso), qEnd = parse(DATA.quarter_end || todayIso);
+const clamp = d => d < qStart ? new Date(qStart) : d > qEnd ? new Date(qEnd) : d;
+
+let mode = "month";
+let cursor = clamp(new Date());   // any date inside the month or week being shown
+
+for (const s of [...new Set(DATA.events.map(e => e.sector))].sort()) el("sector").add(new Option(s, s));
+el("quarter").textContent = DATA.quarter || "";
+
+function filtered() {
+  const q = el("search").value.trim().toLowerCase();
+  const sector = el("sector").value;
+  return DATA.events.filter(e =>
+    (!sector || e.sector === sector) &&
+    (!q || e.ticker.toLowerCase().startsWith(q) || e.company.toLowerCase().includes(q)));
+}
+
+function byDate(events) {
+  const map = new Map();
+  for (const e of events) { if (!map.has(e.date)) map.set(e.date, []); map.get(e.date).push(e); }
+  return map;
+}
+
+function fmtCap(m) {
+  if (m == null) return "";
+  return m >= 1e6 ? `$${(m / 1e6).toFixed(2)}T` : m >= 1e3 ? `$${(m / 1e3).toFixed(1)}B` : `$${Math.round(m)}M`;
+}
+
+function dayCell(d, list, outside) {
+  const key = iso(d);
+  const cell = document.createElement("div");
+  cell.className = "day" + (outside ? " out" : "") + (key === todayIso ? " today" : "");
+  let body;
+  if (mode === "month") {
+    body = `<div class="chips">` + list.slice(0, MAX_CHIPS).map(e =>
+      `<span class="chip ${e.session}" title="${e.company}">${e.ticker}</span>`).join("") + `</div>` +
+      (list.length > MAX_CHIPS ? `<span class="more">+${list.length - MAX_CHIPS} more</span>` : "");
+  } else {
+    body = SESSIONS.map(s => {
+      const group = list.filter(e => e.session === s);
+      return group.length ? `<h3>${SESSION_LABEL[s]} (${group.length})</h3>` + group.map(e =>
+        `<div class="wrow"><span class="chip ${e.session}">${e.ticker}</span><span class="name">${e.company}</span></div>`).join("") : "";
+    }).join("");
+  }
+  const label = mode === "month" ? d.getDate() : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  cell.innerHTML = `<div class="day-head"><span class="day-num">${label}</span>` +
+    `<span class="count">${list.length || ""}</span></div>${body}`;
+  cell.onclick = () => openDetail(key);
+  return cell;
+}
+
+function render() {
+  const events = filtered();
+  const map = byDate(events);
+  const grid = el("grid"); grid.innerHTML = "";
+  grid.parentElement.className = mode;
+  el("view-month").classList.toggle("on", mode === "month");
+  el("view-week").classList.toggle("on", mode === "week");
+
+  let first, last;
+  if (mode === "month") {
+    const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+    const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
+    first = monday(monthStart); last = addDays(monday(monthEnd), 4);
+    el("title").textContent = monthStart.toLocaleString("en-US", { month: "long", year: "numeric" });
+    el("prev").disabled = monthStart <= qStart;
+    el("next").disabled = monthEnd >= qEnd;
+  } else {
+    first = monday(cursor); last = addDays(first, 4);
+    const fmt = { month: "short", day: "numeric" };
+    el("title").textContent = `${first.toLocaleDateString("en-US", fmt)} – ${last.toLocaleDateString("en-US", fmt)}, ${last.getFullYear()}`;
+    el("prev").disabled = first <= qStart;
+    el("next").disabled = addDays(first, 7) > qEnd;
+  }
+  for (let d = new Date(first); d <= last; d = addDays(d, 1)) {
+    if (d.getDay() === 0 || d.getDay() === 6) continue;
+    const outside = mode === "month" && d.getMonth() !== cursor.getMonth();
+    grid.appendChild(dayCell(d, map.get(iso(d)) || [], outside));
+  }
+  el("footer").textContent = `${events.length} reports from today through the end of ${DATA.quarter}. ` +
+    `Dates from Yahoo Finance, pulled ${DATA.generated} (${DATA.tickers_pulled} of ${DATA.universe_size} companies). ` +
+    `Dates can move until a company confirms them.`;
+}
+
+function openDetail(key) {
+  const list = byDate(filtered()).get(key) || [];
+  const title = parse(key).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  let html = `<h2>${title}</h2><div class="sub">${list.length} ${list.length === 1 ? "company reports" : "companies report"}</div>`;
+  for (const s of SESSIONS) {
+    const group = list.filter(e => e.session === s);
+    if (!group.length) continue;
+    html += `<h3>${SESSION_LABEL[s]} (${group.length})</h3>`;
+    for (const e of group) {
+      const eps = e.eps_est == null ? "" : `EPS est ${e.eps_est.toFixed(2)}`;
+      html += `<div class="row"><span class="chip ${e.session}">${e.ticker}</span>` +
+        `<div><div class="name">${e.company}</div><div class="meta">${[e.sector, fmtCap(e.mcap_m)].filter(Boolean).join(" · ")}</div></div>` +
+        `<div class="eps">${eps}</div><button data-reddit="${e.ticker}">Reddit</button>` +
+        `<div class="reddit" id="reddit-${e.ticker}" hidden></div></div>`;
+    }
+  }
+  el("detail-body").innerHTML = html;
+  for (const b of el("detail-body").querySelectorAll("[data-reddit]")) b.onclick = () => pullReddit(b);
+  document.body.classList.add("open");
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function ago(utc) {
+  const h = (Date.now() / 1000 - utc) / 3600;
+  return h < 1 ? "just now" : h < 24 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`;
+}
+
+const sentClass = v => v >= 0.05 ? "pos" : v <= -0.05 ? "neg" : "neu";
+const signed = v => (v > 0 ? "+" : "") + v.toFixed(2);
+function sentLine(name, s) {
+  if (!s) return "";
+  return `<div><strong>${name}:</strong> <span class="${sentClass(s.mean)}">${signed(s.mean)}</span> ` +
+    `<span class="pmeta">(${s.positive} positive, ${s.neutral} neutral, ${s.negative} negative)</span></div>`;
+}
+
+// Calls Reddit only for the ticker whose button was clicked.
+async function pullReddit(button) {
+  const ticker = button.dataset.reddit, box = el(`reddit-${ticker}`);
+  box.hidden = false;
+  if (location.protocol === "file:") {
+    box.innerHTML = `<span class="err">Reddit pulls need the local server: run "uv run serve.py" and open http://localhost:8765/calendar.html</span>`;
+    return;
+  }
+  button.disabled = true; box.innerHTML = `<span class="stat">Pulling from Reddit…</span>`;
+  try {
+    const res = await fetch(`/api/reddit/${ticker}`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    box.innerHTML = `<div class="stat">${data.posts_7d} posts in the last 7 days, ${data.posts_30d} in the last 30 ` +
+      `· searched ${esc(data.query)} · pulled ${data.last_pulled}</div>` +
+      `<div class="sent">${sentLine("Sentiment, 7 days", data.sentiment_7d)}${sentLine("Sentiment, 30 days", data.sentiment_30d)}</div>` +
+      (data.posts.length ? data.posts.map(p =>
+        `<div class="post"><a href="${esc(p.permalink)}" target="_blank" rel="noopener">${esc(p.title)}</a>` +
+        `<div class="pmeta">r/${esc(p.subreddit)} · ${p.score} points · ${p.num_comments} comments · ${ago(p.created_utc)} · <span class="${sentClass(p.sentiment)}">${signed(p.sentiment)}</span></div></div>`).join("")
+        : `<div class="stat">No posts found.</div>`);
+  } catch (err) {
+    box.innerHTML = `<span class="err">${esc(err.message)}</span>`;
+  } finally {
+    button.disabled = false;
+  }
+}
+const closeDetail = () => document.body.classList.remove("open");
+
+function step(n) {
+  cursor = mode === "month" ? new Date(cursor.getFullYear(), cursor.getMonth() + n, 1) : addDays(monday(cursor), 7 * n);
+  cursor = clamp(cursor);
+  render();
+}
+
+el("dow").innerHTML = ["Mon", "Tue", "Wed", "Thu", "Fri"].map(d => `<div class="dow">${d}</div>`).join("");
+el("prev").onclick = () => step(-1);
+el("next").onclick = () => step(1);
+el("today").onclick = () => { cursor = clamp(new Date()); render(); };
+el("view-month").onclick = () => { mode = "month"; render(); };
+el("view-week").onclick = () => { mode = "week"; render(); };
+el("search").oninput = render;
+el("sector").onchange = render;
+el("close").onclick = closeDetail;
+el("shade").onclick = closeDetail;
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDetail(); });
+render();
+</script>
+</body>
+</html>
