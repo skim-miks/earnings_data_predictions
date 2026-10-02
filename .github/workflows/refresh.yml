@@ -1,4 +1,5 @@
-# Re-pulls everything from Yahoo after the US market close, rebuilds the
+# Re-pulls prices, company profiles and earnings from Yahoo after the US market
+# close (earnings only for companies reporting soon, except Fridays), rebuilds the
 # dataset, model scores and calendar data, and publishes the result.
 # If the pull comes back short (for example Yahoo blocking the runner), the
 # job fails before publishing and the previous page stays up.
@@ -8,6 +9,11 @@ on:
   schedule:
     - cron: "15 22 * * 1-5"   # weekdays 22:15 UTC: after the 4pm ET close in both summer and winter time
   workflow_dispatch:
+    inputs:
+      full:
+        description: Re-pull earnings for every company
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,7 +36,19 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync
       - run: uv run collect_data.py prices
-      - run: uv run collect_data.py earnings
+      # Earnings files carry over between runs so most days only need a partial pull.
+      - uses: actions/cache@v4
+        with:
+          path: data/raw/earnings
+          key: earnings-${{ github.run_id }}
+          restore-keys: earnings-
+      - name: Pull earnings (every company on Fridays, otherwise those reporting within 2 weeks)
+        run: |
+          if [ "$(date -u +%u)" = "5" ] || [ "${{ inputs.full }}" = "true" ]; then
+            uv run collect_data.py earnings --refresh
+          else
+            uv run collect_data.py earnings --within-days 14
+          fi
       - run: uv run collect_data.py profiles
       - run: uv run collect_data.py combine --min-tickers 800
       - run: uv run build_dataset.py

@@ -48,7 +48,8 @@ phone's home screen (Safari: Share, then Add to Home Screen).
 
 - `.github/workflows/pages.yml` publishes `app/` whenever it changes on `main`.
 - `.github/workflows/refresh.yml` runs on weekdays after the US close: it re-pulls
-  prices, earnings and company profiles, rebuilds the dataset, retrains the
+  prices, company profiles and earnings (only companies reporting within two weeks
+  or that just reported; every company on Fridays), rebuilds the dataset, retrains the
   move-size model, rebuilds the calendar data and publishes it. It can also be
   started by hand from the Actions tab.
 

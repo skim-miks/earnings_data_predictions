@@ -2,6 +2,7 @@
 
 Usage:
     uv run collect_data.py earnings   # earnings dates, EPS estimate/actual/surprise
+    uv run collect_data.py earnings --within-days 14   # only companies reporting soon or just reported
     uv run collect_data.py prices     # daily OHLCV for universe + benchmarks
     uv run collect_data.py profiles   # current name, sector, industry, HQ, market cap, revenue
     uv run collect_data.py combine    # merge per-ticker files and print a summary
@@ -31,6 +32,7 @@ PROFILES = RAW / "universe.parquet"
 EVENT_START = "2018-01-01"
 PRICE_START = "2017-01-01"
 EARNINGS_LIMIT = 100
+RECENT_DAYS = 7   # keep re-pulling a company this long after it reports
 
 # Market / sector context for market-relative features.
 BENCHMARKS = [
@@ -78,9 +80,29 @@ def fetch_earnings(ticker: str, retries: int = 3) -> pd.DataFrame | None:
     return None
 
 
-def collect_earnings(refresh: bool, pause: float) -> None:
+def due_tickers(tickers: list[str], within_days: int) -> list[str]:
+    """Tickers worth re-pulling today: reporting within `within_days`, reported in the
+    last RECENT_DAYS (results and the next date are still landing), or never pulled."""
+    today = pd.Timestamp.now(tz="America/New_York").normalize()
+    lo, hi = today - pd.Timedelta(days=RECENT_DAYS), today + pd.Timedelta(days=within_days + 1)
+    due = []
+    for ticker in tickers:
+        path = EARNINGS_DIR / f"{ticker}.parquet"
+        if not path.exists():
+            due.append(ticker)
+            continue
+        ts = pd.to_datetime(pd.read_parquet(path)["earnings_ts"], utc=True).dt.tz_convert("America/New_York")
+        if ((ts >= lo) & (ts < hi)).any():
+            due.append(ticker)
+    return due
+
+
+def collect_earnings(refresh: bool, pause: float, within_days: int | None = None) -> None:
     EARNINGS_DIR.mkdir(parents=True, exist_ok=True)
     tickers = load_tickers()
+    if within_days is not None:
+        tickers, refresh = due_tickers(tickers, within_days), True
+        print(f"{len(tickers)} tickers due")
     failed = []
     for i, ticker in enumerate(tickers, 1):
         out = EARNINGS_DIR / f"{ticker}.parquet"
@@ -220,11 +242,13 @@ if __name__ == "__main__":
     parser.add_argument("step", choices=["earnings", "prices", "profiles", "combine"])
     parser.add_argument("--refresh", action="store_true", help="re-pull tickers that already have a file")
     parser.add_argument("--min-tickers", type=int, default=0, help="combine: fail if fewer tickers were pulled")
+    parser.add_argument("--within-days", type=int, default=None,
+                        help="earnings: only re-pull companies reporting within this many days or just reported")
     parser.add_argument("--pause", type=float, default=1.0, help="seconds to sleep between requests")
     args = parser.parse_args()
 
     if args.step == "earnings":
-        collect_earnings(args.refresh, args.pause)
+        collect_earnings(args.refresh, args.pause, args.within_days)
     elif args.step == "prices":
         collect_prices(args.refresh, args.pause)
     elif args.step == "profiles":
