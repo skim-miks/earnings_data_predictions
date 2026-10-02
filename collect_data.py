@@ -3,6 +3,7 @@
 Usage:
     uv run collect_data.py earnings   # earnings dates, EPS estimate/actual/surprise
     uv run collect_data.py prices     # daily OHLCV for universe + benchmarks
+    uv run collect_data.py marketcap  # current market value per ticker
     uv run collect_data.py combine    # merge per-ticker files and print a summary
 
 Each ticker is written to its own parquet file, so an interrupted run resumes
@@ -11,6 +12,7 @@ where it stopped. Use --refresh to re-pull tickers that already have a file.
 
 import argparse
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -119,6 +121,26 @@ def collect_prices(refresh: bool, pause: float, batch_size: int = 40) -> None:
     print(f"done. failed: {len(failed)} {failed[:20]}")
 
 
+def fetch_market_cap(ticker: str) -> float | None:
+    for attempt in range(3):
+        try:
+            return float(yf.Ticker(ticker).fast_info["marketCap"])
+        except Exception:
+            time.sleep(5 * (attempt + 1))
+    return None
+
+
+def collect_market_caps() -> None:
+    tickers = load_universe()["ticker"].tolist()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        caps = list(pool.map(fetch_market_cap, tickers))
+    df = pd.DataFrame({"ticker": tickers, "market_cap": caps, "as_of": pd.Timestamp.now().strftime("%Y-%m-%d")})
+    df = df.dropna(subset=["market_cap"])
+    RAW.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(RAW / "market_caps.parquet", index=False)
+    print(f"market caps for {len(df)} of {len(tickers)} tickers")
+
+
 def report_timing(ts: pd.Series) -> pd.Series:
     """Classify the ET report time: before open, after close, or during the session."""
     t = ts.dt.time
@@ -156,7 +178,7 @@ def combine() -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("step", choices=["earnings", "prices", "combine"])
+    parser.add_argument("step", choices=["earnings", "prices", "marketcap", "combine"])
     parser.add_argument("--refresh", action="store_true", help="re-pull tickers that already have a file")
     parser.add_argument("--pause", type=float, default=1.0, help="seconds to sleep between requests")
     args = parser.parse_args()
@@ -165,5 +187,7 @@ if __name__ == "__main__":
         collect_earnings(args.refresh, args.pause)
     elif args.step == "prices":
         collect_prices(args.refresh, args.pause)
+    elif args.step == "marketcap":
+        collect_market_caps()
     else:
         combine()

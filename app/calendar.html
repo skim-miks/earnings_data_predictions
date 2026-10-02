@@ -7,14 +7,14 @@
 <style>
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --line: #e2e5ea; --text: #16191f; --muted: #6a7280;
-    --accent: #2456d6; --today: #eef3ff; --shade: rgba(0, 0, 0, .35);
+    --accent: #2456d6; --hot: #d1432b; --today: #eef3ff; --shade: rgba(0, 0, 0, .35);
     --bmo-bg: #fff3d6; --bmo-fg: #7a5200; --amc-bg: #e4e9ff; --amc-fg: #2a3a9a;
     --during-bg: #e6f4ea; --during-fg: #1d6b37;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #111318; --panel: #1a1d24; --line: #2b303a; --text: #e8eaee; --muted: #9099a8;
-      --accent: #7da2ff; --today: #1c2540; --shade: rgba(0, 0, 0, .55);
+      --accent: #7da2ff; --hot: #ff7a5c; --today: #1c2540; --shade: rgba(0, 0, 0, .55);
       --bmo-bg: #453510; --bmo-fg: #ffd98a; --amc-bg: #262f63; --amc-fg: #c3ccff;
       --during-bg: #173622; --during-fg: #9fe0b3;
     }
@@ -57,6 +57,11 @@
   .count { color: var(--muted); font-size: 12px; }
   .chips { display: flex; flex-wrap: wrap; gap: 3px; }
   .more { color: var(--muted); font-size: 12px; }
+  .chip.hot { box-shadow: 0 0 0 1.5px var(--hot); }
+  .move { font-size: 12px; white-space: nowrap; text-align: right; }
+  .move .p { font-weight: 600; }
+  .move .p.hot { color: var(--hot); }
+  .move .past { color: var(--muted); }
   .week .day { min-height: 60vh; }
   .week h3 { margin: 6px 0 2px; }
   .wrow { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
@@ -75,6 +80,15 @@
   .row .meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .eps { color: var(--muted); font-size: 12px; white-space: nowrap; text-align: right; }
   .row { grid-template-columns: 58px minmax(0, 1fr) auto auto; }
+  .star { border: 0; background: none; padding: 0 2px; font-size: 16px; color: var(--muted); line-height: 1; }
+  .star.on { color: #e0a800; }
+  .watch-add { display: flex; gap: 6px; margin: 12px 0; }
+  .watch-add input { flex: 1; min-width: 0; }
+  .watch-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .watch-item .meta { color: var(--muted); font-size: 12px; }
+  .row { grid-template-columns: 58px minmax(0, 1fr) auto auto auto; }
+  .sortbar { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .sortbar select { padding: 2px 6px; font-size: 12px; }
   .row button { padding: 2px 8px; font-size: 12px; }
   .reddit { grid-column: 1 / -1; font-size: 12px; border-left: 2px solid var(--line); padding: 2px 0 4px 10px; }
   .reddit .stat { color: var(--muted); margin-bottom: 4px; }
@@ -107,10 +121,17 @@
     <button id="today">Today</button>
   </div>
   <input id="search" type="search" placeholder="Ticker or company">
-  <select id="sector"><option value="">All sectors</option></select>
+  <select id="scope" aria-label="Companies shown">
+    <option value="top">Largest 500</option>
+    <option value="watch">My watchlist</option>
+    <option value="all">All companies</option>
+  </select>
+  <select id="sector" aria-label="Sector"><option value="">All sectors</option></select>
+  <button id="edit-watch">Edit watchlist</button>
   <div class="legend">
     <span><span class="chip bmo">ABC</span> before open</span>
     <span><span class="chip amc">ABC</span> after close</span>
+    <span><span class="chip bmo hot">ABC</span> likely big mover</span>
   </div>
 </header>
 <main>
@@ -125,6 +146,10 @@
 <script>
 const DATA = window.EARNINGS_CALENDAR || { events: [], generated: "never" };
 const MAX_CHIPS = 8;
+const HOT = 0.6;   // chance of a 5%+ move at which a company is flagged
+let detailSort = "mcap", detailKey = null;
+const hot = e => e.p_big_move != null && e.p_big_move >= HOT ? " hot" : "";
+const pct = (v, d = 0) => `${(v * 100).toFixed(d)}%`;
 const SESSIONS = ["bmo", "during", "amc"];
 const SESSION_LABEL = { bmo: "Before open", amc: "After close", during: "During session" };
 const el = id => document.getElementById(id);
@@ -144,10 +169,21 @@ let cursor = clamp(new Date());   // any date inside the month or week being sho
 for (const s of [...new Set(DATA.events.map(e => e.sector))].sort()) el("sector").add(new Option(s, s));
 el("quarter").textContent = DATA.quarter || "";
 
+// Watchlist lives in this browser only.
+function loadWatch() {
+  try { return new Set(JSON.parse(localStorage.getItem("watchlist") || "[]")); } catch { return new Set(); }
+}
+let watch = loadWatch();
+function saveWatch() {
+  try { localStorage.setItem("watchlist", JSON.stringify([...watch].sort())); } catch { /* storage unavailable */ }
+}
+
 function filtered() {
   const q = el("search").value.trim().toLowerCase();
   const sector = el("sector").value;
+  const scope = el("scope").value;
   return DATA.events.filter(e =>
+    (scope === "all" || (scope === "top" ? e.top : watch.has(e.ticker))) &&
     (!sector || e.sector === sector) &&
     (!q || e.ticker.toLowerCase().startsWith(q) || e.company.toLowerCase().includes(q)));
 }
@@ -170,13 +206,13 @@ function dayCell(d, list, outside) {
   let body;
   if (mode === "month") {
     body = `<div class="chips">` + list.slice(0, MAX_CHIPS).map(e =>
-      `<span class="chip ${e.session}" title="${e.company}">${e.ticker}</span>`).join("") + `</div>` +
+      `<span class="chip ${e.session}${hot(e)}" title="${e.company}">${e.ticker}</span>`).join("") + `</div>` +
       (list.length > MAX_CHIPS ? `<span class="more">+${list.length - MAX_CHIPS} more</span>` : "");
   } else {
     body = SESSIONS.map(s => {
       const group = list.filter(e => e.session === s);
       return group.length ? `<h3>${SESSION_LABEL[s]} (${group.length})</h3>` + group.map(e =>
-        `<div class="wrow"><span class="chip ${e.session}">${e.ticker}</span><span class="name">${e.company}</span></div>`).join("") : "";
+        `<div class="wrow"><span class="chip ${e.session}${hot(e)}">${e.ticker}</span><span class="name">${e.company}</span></div>`).join("") : "";
     }).join("");
   }
   const label = mode === "month" ? d.getDate() : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -215,28 +251,44 @@ function render() {
     grid.appendChild(dayCell(d, map.get(iso(d)) || [], outside));
   }
   el("footer").textContent = `${events.length} reports from today through the end of ${DATA.quarter}. ` +
-    `Dates from Yahoo Finance, pulled ${DATA.generated} (${DATA.tickers_pulled} of ${DATA.universe_size} companies). ` +
-    `Dates can move until a company confirms them.`;
+    `Dates from Yahoo Finance, pulled ${DATA.generated}. Largest ${DATA.top_n} ranked by market value as of ${DATA.caps_as_of}. ` +
+    `Dates can move until a company confirms them. ` +
+    (DATA.scores_as_of ? `Move chances are a model estimate of a 5% or larger move in either direction, using prices through ${DATA.scores_as_of}; they say nothing about direction.` : "");
 }
 
 function openDetail(key) {
-  const list = byDate(filtered()).get(key) || [];
+  detailKey = key;
+  const list = [...(byDate(filtered()).get(key) || [])];
+  if (detailSort === "move") list.sort((a, b) => (b.p_big_move ?? -1) - (a.p_big_move ?? -1));
   const title = parse(key).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
-  let html = `<h2>${title}</h2><div class="sub">${list.length} ${list.length === 1 ? "company reports" : "companies report"}</div>`;
+  let html = `<h2>${title}</h2><div class="sub">${list.length} ${list.length === 1 ? "company reports" : "companies report"}</div>` +
+    `<div class="sortbar">Sort by <select id="detail-sort"><option value="mcap">Market cap</option>` +
+    `<option value="move"${detailSort === "move" ? " selected" : ""}>Chance of a big move</option></select></div>`;
   for (const s of SESSIONS) {
     const group = list.filter(e => e.session === s);
     if (!group.length) continue;
     html += `<h3>${SESSION_LABEL[s]} (${group.length})</h3>`;
     for (const e of group) {
       const eps = e.eps_est == null ? "" : `EPS est ${e.eps_est.toFixed(2)}`;
+      const move = e.p_big_move == null ? "" :
+        `<div class="move"><div class="p${hot(e)}" title="Model's chance of a 5% or larger move, up or down">${pct(e.p_big_move)} chance of ±5%</div>` +
+        (e.past_move == null ? "" : `<div class="past" title="Average absolute move on its last 8 reports">past avg ±${pct(e.past_move, 1)}</div>`) + `</div>`;
       html += `<div class="row"><span class="chip ${e.session}">${e.ticker}</span>` +
         `<div><div class="name">${e.company}</div><div class="meta">${[e.sector, fmtCap(e.mcap_m)].filter(Boolean).join(" · ")}</div></div>` +
-        `<div class="eps">${eps}</div><button data-reddit="${e.ticker}">Reddit</button>` +
+        `<div>${move}<div class="eps">${eps}</div></div>` +
+        `<button class="star${watch.has(e.ticker) ? " on" : ""}" data-star="${e.ticker}" title="Add to or remove from watchlist">${watch.has(e.ticker) ? "★" : "☆"}</button>` +
+        `<button data-reddit="${e.ticker}">Reddit</button>` +
         `<div class="reddit" id="reddit-${e.ticker}" hidden></div></div>`;
     }
   }
   el("detail-body").innerHTML = html;
   for (const b of el("detail-body").querySelectorAll("[data-reddit]")) b.onclick = () => pullReddit(b);
+  el("detail-sort").onchange = ev => { detailSort = ev.target.value; openDetail(detailKey); };
+  for (const b of el("detail-body").querySelectorAll("[data-star]")) b.onclick = () => {
+    const t = b.dataset.star;
+    watch.has(t) ? watch.delete(t) : watch.add(t);
+    saveWatch(); render(); openDetail(detailKey);
+  };
   document.body.classList.add("open");
 }
 
@@ -280,6 +332,27 @@ async function pullReddit(button) {
     button.disabled = false;
   }
 }
+function openWatchlist() {
+  const byTicker = new Map(DATA.events.map(e => [e.ticker, e]));
+  const items = [...watch].sort().map(t => {
+    const e = byTicker.get(t);
+    const info = e ? `${esc(e.company)} · reports ${e.date}` : "no report on the calendar this quarter";
+    return `<div class="watch-item"><div><strong>${esc(t)}</strong> <span class="meta">${info}</span></div>` +
+      `<button data-remove="${esc(t)}">Remove</button></div>`;
+  }).join("");
+  el("detail-body").innerHTML = `<h2>My watchlist</h2><div class="sub">${watch.size} tickers, saved in this browser</div>` +
+    `<form class="watch-add" id="watch-form"><input id="watch-input" placeholder="Add tickers, e.g. NFLX, WMT"><button>Add</button></form>` +
+    (items || `<div class="sub">Nothing here yet. Add tickers above, or use the star next to a company.</div>`);
+  el("watch-form").onsubmit = ev => {
+    ev.preventDefault();
+    for (const t of el("watch-input").value.toUpperCase().split(/[^A-Z.\-]+/).filter(Boolean)) watch.add(t);
+    saveWatch(); render(); openWatchlist();
+  };
+  for (const b of el("detail-body").querySelectorAll("[data-remove]")) b.onclick = () => {
+    watch.delete(b.dataset.remove); saveWatch(); render(); openWatchlist();
+  };
+  document.body.classList.add("open");
+}
 const closeDetail = () => document.body.classList.remove("open");
 
 function step(n) {
@@ -296,6 +369,8 @@ el("view-month").onclick = () => { mode = "month"; render(); };
 el("view-week").onclick = () => { mode = "week"; render(); };
 el("search").oninput = render;
 el("sector").onchange = render;
+el("scope").onchange = render;
+el("edit-watch").onclick = openWatchlist;
 el("close").onclick = closeDetail;
 el("shade").onclick = closeDetail;
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeDetail(); });
