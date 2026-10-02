@@ -43,7 +43,7 @@ def window_events() -> pd.DataFrame:
     df = df[(df["lead"] == 1) & ~df["upcoming"]].replace([np.inf, -np.inf], np.nan)
     df["earnings_date"] = pd.to_datetime(df["earnings_date"])
     start = df["earnings_date"].max() - pd.DateOffset(months=MONTHS_BACK)
-    names = pd.read_parquet(RAW / "universe.parquet").set_index("ticker")["Company"]
+    names = pd.read_parquet(RAW / "universe.parquet").set_index("ticker")["search_name"]
     df["company"] = df["ticker"].map(names)
     return df, start
 
@@ -131,7 +131,7 @@ def bootstrap_gain(y: np.ndarray, base: np.ndarray, plus: np.ndarray, n: int = 2
 
 def test() -> None:
     df, start = window_events()
-    num = [c for c in df.columns if c not in tm.NOT_FEATURES and c != "company"]
+    num = tm.NUM
     train, win = df[df["earnings_date"] <= start], df[df["earnings_date"] > start].copy()
     win["base_score"] = tm.fit_predict(train, win, num)   # move-size model trained only on earlier events
     feats = [news_features(t, d) for t, d in zip(win["ticker"], win["earnings_date"])]

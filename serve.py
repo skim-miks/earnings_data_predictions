@@ -19,7 +19,7 @@ from collect_data import load_universe
 
 PORT = 8765
 APP_DIR = Path(__file__).parent / "app"
-COMPANIES = dict(zip(*[load_universe()[c] for c in ("ticker", "Company")]))
+COMPANIES = dict(zip(*[load_universe()[c] for c in ("ticker", "search_name")]))
 
 
 class Handler(SimpleHTTPRequestHandler):

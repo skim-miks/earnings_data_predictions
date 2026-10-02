@@ -27,7 +27,7 @@ TARGETS = ["target_raw", "target_vs_spy"]
 THRESHOLDS = [0.03, 0.05]
 TEST_YEARS = [2022, 2023, 2024, 2025, 2026]
 CAT = ["quarter", "Sector", "Industry", "HeadquartersState", "report_timing"]
-NOT_FEATURES = {"upcoming", "ticker", "earnings_date", "reaction_date", "lead", "feature_date", "HeadquartersCity", *TARGETS, *CAT}
+NOT_FEATURES = {"upcoming", "surprise_actual", "ticker", "earnings_date", "reaction_date", "lead", "feature_date", *TARGETS, *CAT}
 CLIP = (0.005, 0.995)   # per-feature quantile clip, fit on train
 
 

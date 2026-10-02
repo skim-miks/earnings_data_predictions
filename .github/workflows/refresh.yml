@@ -1,0 +1,44 @@
+# Re-pulls everything from Yahoo after the US market close, rebuilds the
+# dataset, model scores and calendar data, and publishes the result.
+# If the pull comes back short (for example Yahoo blocking the runner), the
+# job fails before publishing and the previous page stays up.
+name: Refresh data and publish
+
+on:
+  schedule:
+    - cron: "15 22 * * 1-5"   # weekdays 22:15 UTC: after the 4pm ET close in both summer and winter time
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run collect_data.py prices
+      - run: uv run collect_data.py earnings
+      - run: uv run collect_data.py profiles
+      - run: uv run collect_data.py combine --min-tickers 800
+      - run: uv run build_dataset.py
+      - run: uv run train_model.py
+      - run: uv run build_calendar.py
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app
+      - id: deploy
+        uses: actions/deploy-pages@v4

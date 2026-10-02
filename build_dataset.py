@@ -26,6 +26,8 @@ from collect_data import EARNINGS_DIR, EVENT_START, RAW, report_timing
 OUT = RAW.parent / "processed" / "events.parquet"
 LEADS = [1, 2, 3]
 SURPRISE_CLIP = 200   # percent; Yahoo's surprise explodes when the estimate is near zero
+BIG_MOVE = 0.05       # a "big" reaction: 5% or more in either direction
+PEER_WINDOW_DAYS = 45
 MAX_GAP_DAYS = 5      # calendar days allowed between the report date and the reaction session
 
 
@@ -50,6 +52,10 @@ def daily_features(p: pd.DataFrame, market: pd.DataFrame) -> pd.DataFrame:
     f["rsi_14"] = rsi(adj)
     f["vol_1w"] = ret.rolling(5).std()
     f["vol_1m"] = ret.rolling(21).std()
+    f["vol_3m"] = ret.rolling(63).std()
+    f["vol_1y"] = ret.rolling(252).std()
+    f["vol_1m_vs_3m"] = f["vol_1m"] / f["vol_3m"]
+    f["vol_1m_vs_1y"] = f["vol_1m"] / f["vol_1y"]
     f["dist_52w_high"] = close / p["High"].rolling(252).max() - 1
     f["dist_52w_low"] = close / p["Low"].rolling(252).min() - 1
     f["high_low_range"] = (p["High"] - p["Low"]) / close
@@ -103,6 +109,7 @@ def event_row(ticker, ev, feat, lead, reaction_date, target_raw, target_vs_spy) 
         "ticker": ticker, "earnings_date": ev.earnings_date, "report_timing": ev.report_timing,
         "upcoming": ev.upcoming, "reaction_date": reaction_date, "lead": lead, "feature_date": feat["date"],
         "target_raw": target_raw, "target_vs_spy": target_vs_spy,
+        "surprise_actual": ev.surprise,   # this report's result: an outcome, never a feature
         "eps_est_yield": ev.eps_est / close, "eps_prior_yield": ev.eps_prior / close,
         "eps_ttm_yield": ev.eps_ttm / close, "est_vs_prior": (ev.eps_est - ev.eps_prior) / close,
         "surprise_prior": ev.surprise_prior, "surprise_mean_4q": ev.surprise_mean_4q,
@@ -110,17 +117,67 @@ def event_row(ticker, ev, feat, lead, reaction_date, target_raw, target_vs_spy) 
     }
 
 
+PAST_MOVE_FEATURES = ["past_move_last", "past_move_mean_8", "past_move_max_8", "past_move_median_8",
+                      "past_move_mean_4", "past_move_trend", "past_move_same_q", "past_move_mean_all",
+                      "past_big_share_8"]
+PEER_FEATURES = [f"peer_{level}_{stat}" for level in ("industry", "sector")
+                 for stat in ("move", "move_vs_usual", "count")]
+
+
 def add_past_moves(df: pd.DataFrame) -> pd.DataFrame:
     """How much this stock moved on its own earlier reports (earlier events only)."""
     one = df[df["lead"] == 1].sort_values(["ticker", "earnings_date"])
-    moves = one["target_raw"].abs().groupby(one["ticker"])
+    move = one["target_raw"].abs()
+    g = move.groupby(one["ticker"])
+    prior = lambda fn: g.transform(lambda s: fn(s.shift(1)))  # noqa: E731
+    big = (move >= BIG_MOVE).where(move.notna()).astype(float).groupby(one["ticker"])
     one = one.assign(
-        past_move_last=moves.shift(1),
-        past_move_mean_8=moves.transform(lambda s: s.shift(1).rolling(8, min_periods=2).mean()),
-        past_move_max_8=moves.transform(lambda s: s.shift(1).rolling(8, min_periods=2).max()),
+        past_move_last=g.shift(1),
+        past_move_mean_8=prior(lambda s: s.rolling(8, min_periods=2).mean()),
+        past_move_max_8=prior(lambda s: s.rolling(8, min_periods=2).max()),
+        past_move_median_8=prior(lambda s: s.rolling(8, min_periods=2).median()),
+        past_move_mean_4=prior(lambda s: s.rolling(4, min_periods=2).mean()),
+        past_move_same_q=g.shift(4),   # same quarter a year earlier
+        past_move_mean_all=prior(lambda s: s.expanding(min_periods=2).mean()),
+        past_big_share_8=big.transform(lambda s: s.shift(1).rolling(8, min_periods=2).mean()),
     )
+    one["past_move_trend"] = one["past_move_mean_4"] - one["past_move_mean_8"]
     keys = ["ticker", "earnings_date"]
-    return df.merge(one[keys + ["past_move_last", "past_move_mean_8", "past_move_max_8"]], on=keys, how="left")
+    return df.merge(one[keys + PAST_MOVE_FEATURES], on=keys, how="left")
+
+
+def peer_groups(one: pd.DataFrame, level: str):
+    """For each event, the positions of peers whose reaction finished within PEER_WINDOW_DAYS before its feature date.
+
+    `one` needs a 0..n-1 index. Upcoming reports have no reaction date, so they are never a peer.
+    """
+    window = np.timedelta64(PEER_WINDOW_DAYS, "D")
+    for _, grp in one.groupby(level):
+        pos, done = grp.index.values, grp["reaction_date"].values
+        fdate, tick = grp["feature_date"].values, grp["ticker"].values
+        for j in range(len(grp)):
+            seen = (done <= fdate[j]) & (done >= fdate[j] - window) & (tick != tick[j])
+            if seen.any():
+                yield pos[j], pos[seen]
+
+
+def add_peer_reactions(df: pd.DataFrame) -> pd.DataFrame:
+    """How same-industry and same-sector companies that already reported this season moved."""
+    one = df[df["lead"] == 1].reset_index(drop=True)
+    move = one["target_raw"].abs().values
+    vs_usual = move / one["past_move_mean_8"].values
+    for level in ("Industry", "Sector"):
+        tag = level.lower()
+        mean, ratio, count = np.full(len(one), np.nan), np.full(len(one), np.nan), np.zeros(len(one))
+        for i, peers in peer_groups(one, level):
+            count[i] = len(peers)
+            mean[i] = move[peers].mean()
+            rel = vs_usual[peers]
+            if np.isfinite(rel).any():
+                ratio[i] = np.median(rel[np.isfinite(rel)])
+        one[f"peer_{tag}_move"], one[f"peer_{tag}_move_vs_usual"], one[f"peer_{tag}_count"] = mean, ratio, count
+    keys = ["ticker", "earnings_date"]
+    return df.merge(one[keys + PEER_FEATURES], on=keys, how="left")
 
 
 def build() -> pd.DataFrame:
@@ -162,7 +219,9 @@ def build() -> pd.DataFrame:
                 rows.append(event_row(ticker, ev, f.iloc[base - (lead - 1)], lead, dates[react],
                                       target_raw, target_raw - spy_ret))
 
-    df = add_past_moves(pd.DataFrame(rows)).merge(universe.drop(columns=["Company"]), on="ticker", how="left")
+    df = add_past_moves(pd.DataFrame(rows))
+    df = df.merge(universe[["ticker", "Sector", "Industry", "HeadquartersState"]], on="ticker", how="left")
+    df = add_peer_reactions(df)
     df["quarter"] = pd.to_datetime(df["earnings_date"]).dt.quarter
     return df.sort_values(["earnings_date", "ticker", "lead"]).reset_index(drop=True)
 

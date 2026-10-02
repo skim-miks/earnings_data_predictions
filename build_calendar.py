@@ -13,13 +13,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from collect_data import EARNINGS_DIR, RAW, TICKER_RENAMES, UNIVERSE_FILE
+from collect_data import EARNINGS_DIR, load_universe
 
 OUT = Path(__file__).parent / "app" / "calendar_data.js"
 SCORES = Path(__file__).parent / "data" / "processed" / "upcoming_scores.parquet"
 TZ = "America/New_York"
 TOP_N = 500   # default calendar view: the largest companies by current market cap
-MARKET_CAPS = RAW / "market_caps.parquet"   # from `collect_data.py marketcap`
 
 
 def session(ts: pd.Series) -> pd.Series:
@@ -43,21 +42,12 @@ def main() -> None:
     upcoming["date"] = ts.dt.strftime("%Y-%m-%d")
     upcoming["session"] = session(ts)
 
-    f = pd.read_csv(UNIVERSE_FILE)
-    f = f[f["CompanyType"] == "Public"].drop_duplicates("Ticker")
-    f["Ticker"] = f["Ticker"].replace(TICKER_RENAMES)
-    f["mcap_m"] = pd.to_numeric(f["MarketCap_Updated_M"], errors="coerce").fillna(
-        pd.to_numeric(f["MarketCap_March28_M"], errors="coerce"))
-    f = f.rename(columns={"Ticker": "ticker", "Company": "company", "Sector": "sector",
-                          "Industry": "industry", "Rank": "rank"})
-    caps_as_of = "mid-2024 (list file)"
-    if MARKET_CAPS.exists():
-        caps = pd.read_parquet(MARKET_CAPS)
-        caps_as_of = caps["as_of"].max()
-        current = f["ticker"].map(caps.set_index("ticker")["market_cap"] / 1e6)
-        f["mcap_m"] = current.fillna(f["mcap_m"]).round(0)
+    # Company details and size are current Yahoo values; the 2024 list only supplies tickers.
+    f = load_universe().rename(columns={"Company": "company", "Sector": "sector", "Industry": "industry"})
+    f["mcap_m"] = (f["market_cap"] / 1e6).round(0)
+    caps_as_of = f["as_of"].max()
     top = set(f.nlargest(TOP_N, "mcap_m")["ticker"])
-    upcoming = upcoming.merge(f[["ticker", "company", "sector", "industry", "rank", "mcap_m"]], on="ticker")
+    upcoming = upcoming.merge(f[["ticker", "company", "sector", "industry", "mcap_m"]], on="ticker")
     upcoming["top"] = upcoming["ticker"].isin(top)
     upcoming = upcoming.rename(columns={"EPS Estimate": "eps_est"})
     # Move-size model output (train_model.py): chance of a 5%+ move either way.
@@ -73,7 +63,7 @@ def main() -> None:
             scores[["ticker", "date", "p_big_move", "past_move"]], on=["ticker", "date"], how="left")
     upcoming = upcoming.sort_values(["date", "mcap_m"], ascending=[True, False])
 
-    cols = ["ticker", "company", "sector", "industry", "rank", "mcap_m", "date", "session", "eps_est",
+    cols = ["ticker", "company", "sector", "industry", "mcap_m", "date", "session", "eps_est",
             "p_big_move", "past_move", "top"]
     records = json.loads(upcoming[cols].to_json(orient="records"))
     payload = {

@@ -3,7 +3,7 @@
 Usage:
     uv run collect_data.py earnings   # earnings dates, EPS estimate/actual/surprise
     uv run collect_data.py prices     # daily OHLCV for universe + benchmarks
-    uv run collect_data.py marketcap  # current market value per ticker
+    uv run collect_data.py profiles   # current name, sector, industry, HQ, market cap, revenue
     uv run collect_data.py combine    # merge per-ticker files and print a summary
 
 Each ticker is written to its own parquet file, so an interrupted run resumes
@@ -11,6 +11,7 @@ where it stopped. Use --refresh to re-pull tickers that already have a file.
 """
 
 import argparse
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -23,6 +24,7 @@ UNIVERSE_FILE = ROOT / "reference" / "fortune1000_2024.csv"
 RAW = ROOT / "data" / "raw"
 EARNINGS_DIR = RAW / "earnings"
 PRICES_DIR = RAW / "prices"
+PROFILES = RAW / "universe.parquet"
 
 # Modeling window starts in 2018. Prices start a year earlier so 1-year
 # lookback features exist for the first events.
@@ -46,12 +48,18 @@ MARKET_OPEN = pd.Timestamp("09:30").time()
 MARKET_CLOSE = pd.Timestamp("16:00").time()
 
 
-def load_universe() -> pd.DataFrame:
+def load_tickers() -> list[str]:
+    """The 2024 Fortune 1000 list supplies tickers only; everything else comes from Yahoo."""
     f = pd.read_csv(UNIVERSE_FILE)
     f = f[f["CompanyType"] == "Public"]
-    f["Ticker"] = f["Ticker"].replace(TICKER_RENAMES)
-    f = f[["Ticker", "Company", "Sector", "Industry", "HeadquartersCity", "HeadquartersState"]]
-    return f.rename(columns={"Ticker": "ticker"}).drop_duplicates("ticker").reset_index(drop=True)
+    return f["Ticker"].replace(TICKER_RENAMES).drop_duplicates().tolist()
+
+
+def load_universe() -> pd.DataFrame:
+    """Current company profiles (name, sector, industry, HQ, market cap, revenue) from Yahoo."""
+    if not PROFILES.exists():
+        raise SystemExit("No company profiles yet. Run: uv run collect_data.py profiles")
+    return pd.read_parquet(PROFILES)
 
 
 def fetch_earnings(ticker: str, retries: int = 3) -> pd.DataFrame | None:
@@ -72,7 +80,7 @@ def fetch_earnings(ticker: str, retries: int = 3) -> pd.DataFrame | None:
 
 def collect_earnings(refresh: bool, pause: float) -> None:
     EARNINGS_DIR.mkdir(parents=True, exist_ok=True)
-    tickers = load_universe()["ticker"].tolist()
+    tickers = load_tickers()
     failed = []
     for i, ticker in enumerate(tickers, 1):
         out = EARNINGS_DIR / f"{ticker}.parquet"
@@ -92,7 +100,7 @@ def collect_earnings(refresh: bool, pause: float) -> None:
 
 def collect_prices(refresh: bool, pause: float, batch_size: int = 40) -> None:
     PRICES_DIR.mkdir(parents=True, exist_ok=True)
-    tickers = load_universe()["ticker"].tolist() + BENCHMARKS
+    tickers = load_tickers() + BENCHMARKS
     todo = [t for t in tickers if refresh or not (PRICES_DIR / f"{t}.parquet").exists()]
     failed = []
     for start in range(0, len(todo), batch_size):
@@ -121,24 +129,46 @@ def collect_prices(refresh: bool, pause: float, batch_size: int = 40) -> None:
     print(f"done. failed: {len(failed)} {failed[:20]}")
 
 
-def fetch_market_cap(ticker: str) -> float | None:
+CORPORATE_SUFFIX = re.compile(
+    r"[,.]?\s+(and Company|& Company|Inc|Incorporated|Corp|Corporation|Co|Company|Companies|Holdings?|Group|Ltd|Limited|plc|PLC|"
+    r"N\.?V|S\.?A|L\.?P|LLC|& Co|Trust)\.?$")
+
+
+def search_name(name: str) -> str:
+    """Company name as people write it in posts and headlines, e.g. 'Walmart Inc.' -> 'Walmart'."""
+    name = re.sub(r"^The\s+", "", name.strip())
+    for _ in range(3):
+        name = CORPORATE_SUFFIX.sub("", name).strip(" ,")
+    return name
+
+
+def fetch_profile(ticker: str) -> dict | None:
     for attempt in range(3):
         try:
-            return float(yf.Ticker(ticker).fast_info["marketCap"])
+            info = yf.Ticker(ticker).info
+            name = info.get("longName") or info.get("shortName")
+            if not name or not info.get("marketCap"):
+                return None
+            return {
+                "ticker": ticker, "Company": name, "search_name": search_name(name),
+                "Sector": info.get("sector"), "Industry": info.get("industry"),
+                "HeadquartersCity": info.get("city"), "HeadquartersState": info.get("state"),
+                "market_cap": float(info["marketCap"]), "revenue": info.get("totalRevenue"),
+            }
         except Exception:
             time.sleep(5 * (attempt + 1))
     return None
 
 
-def collect_market_caps() -> None:
-    tickers = load_universe()["ticker"].tolist()
+def collect_profiles() -> None:
+    tickers = load_tickers()
     with ThreadPoolExecutor(max_workers=4) as pool:
-        caps = list(pool.map(fetch_market_cap, tickers))
-    df = pd.DataFrame({"ticker": tickers, "market_cap": caps, "as_of": pd.Timestamp.now().strftime("%Y-%m-%d")})
-    df = df.dropna(subset=["market_cap"])
+        profiles = [p for p in pool.map(fetch_profile, tickers) if p]
+    df = pd.DataFrame(profiles)
+    df["as_of"] = pd.Timestamp.now().strftime("%Y-%m-%d")
     RAW.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(RAW / "market_caps.parquet", index=False)
-    print(f"market caps for {len(df)} of {len(tickers)} tickers")
+    df.to_parquet(PROFILES, index=False)
+    print(f"profiles for {len(df)} of {len(tickers)} tickers")
 
 
 def report_timing(ts: pd.Series) -> pd.Series:
@@ -150,7 +180,7 @@ def report_timing(ts: pd.Series) -> pd.Series:
     return out
 
 
-def combine() -> None:
+def combine(min_tickers: int = 0) -> None:
     earnings = pd.concat([pd.read_parquet(p) for p in sorted(EARNINGS_DIR.glob("*.parquet"))], ignore_index=True)
     earnings["earnings_ts"] = pd.to_datetime(earnings["earnings_ts"], utc=True).dt.tz_convert("America/New_York")
     earnings["earnings_date"] = earnings["earnings_ts"].dt.date
@@ -165,7 +195,9 @@ def combine() -> None:
     prices = prices.sort_values(["ticker", "date"]).reset_index(drop=True)
     prices.to_parquet(RAW / "prices.parquet", index=False)
 
-    load_universe().to_parquet(RAW / "universe.parquet", index=False)
+    covered = min(earnings["ticker"].nunique(), prices["ticker"].nunique(), len(load_universe()))
+    if covered < min_tickers:
+        raise SystemExit(f"Only {covered} tickers pulled, expected at least {min_tickers}; not publishing a partial pull.")
 
     reported = earnings.dropna(subset=["Reported EPS"])
     print(f"earnings: {len(earnings):,} rows, {earnings['ticker'].nunique()} tickers, "
@@ -178,8 +210,9 @@ def combine() -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("step", choices=["earnings", "prices", "marketcap", "combine"])
+    parser.add_argument("step", choices=["earnings", "prices", "profiles", "combine"])
     parser.add_argument("--refresh", action="store_true", help="re-pull tickers that already have a file")
+    parser.add_argument("--min-tickers", type=int, default=0, help="combine: fail if fewer tickers were pulled")
     parser.add_argument("--pause", type=float, default=1.0, help="seconds to sleep between requests")
     args = parser.parse_args()
 
@@ -187,7 +220,7 @@ if __name__ == "__main__":
         collect_earnings(args.refresh, args.pause)
     elif args.step == "prices":
         collect_prices(args.refresh, args.pause)
-    elif args.step == "marketcap":
-        collect_market_caps()
+    elif args.step == "profiles":
+        collect_profiles()
     else:
-        combine()
+        combine(args.min_tickers)

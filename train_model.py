@@ -20,15 +20,16 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from build_dataset import BIG_MOVE, PAST_MOVE_FEATURES, PEER_FEATURES
 from build_dataset import OUT as EVENTS
 
 SCORES = EVENTS.parent / "upcoming_scores.parquet"
-BIG_MOVE = 0.05
 TEST_YEARS = [2022, 2023, 2024, 2025, 2026]
-CAT = ["quarter", "Sector", "Industry", "report_timing"]
-PAST_MOVES = ["past_move_last", "past_move_mean_8", "past_move_max_8"]
-NOT_FEATURES = {"ticker", "earnings_date", "reaction_date", "lead", "feature_date", "upcoming",
-                "target_raw", "target_vs_spy", "HeadquartersCity", "HeadquartersState", *CAT}
+# Chosen in experiments/feature_groups.py: the stock's own past earnings moves, its
+# volatility, how peers moved this season, and sector. EPS, momentum and market
+# features added nothing for move size.
+NUM = [*PAST_MOVE_FEATURES, "vol_1m", "vol_3m", "vol_1y", "vol_1m_vs_3m", "vol_1m_vs_1y", *PEER_FEATURES]
+CAT = ["Sector"]
 CLIP = (0.005, 0.995)   # per-feature quantile clip, fit on train
 
 
@@ -87,12 +88,11 @@ if __name__ == "__main__":
     df = df[df["lead"] == 1].replace([np.inf, -np.inf], np.nan).reset_index(drop=True)
     df["earnings_date"] = pd.to_datetime(df["earnings_date"])
     hist, upcoming = df[~df["upcoming"]], df[df["upcoming"]]
-    num = [c for c in df.columns if c not in NOT_FEATURES]
+    num = NUM
 
     print(f"Out-of-time test, {TEST_YEARS[0]}-{TEST_YEARS[-1]}: move of {BIG_MOVE:.0%} or more in either direction")
-    report(hist, out_of_time(hist, [c for c in num if c not in PAST_MOVES]), "without past earnings moves")
     prob = out_of_time(hist, num)
-    report(hist, prob, "with past earnings moves   ")
+    report(hist, prob, f"{len(NUM) + len(CAT)} features")
 
     scored = prob.notna()
     table = pd.DataFrame({"predicted": prob[scored], "big_move": hist.loc[scored, "target_raw"].abs() >= BIG_MOVE,
