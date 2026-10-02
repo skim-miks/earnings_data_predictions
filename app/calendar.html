@@ -78,9 +78,12 @@
   #detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); background: var(--panel);
             border-left: 1px solid var(--line); z-index: 4; padding: 16px; overflow: auto; display: none; }
   body.open #shade, body.open #detail { display: block; }
-  #detail h2 { font-size: 16px; margin: 0 40px 2px 0; }
+  #detail h2 { font-size: 16px; margin: 0 0 2px; }
   #detail .sub { color: var(--muted); font-size: 12px; }
-  #close { position: absolute; top: 12px; right: 12px; }
+  /* Stays visible while the list scrolls, and clears the iPhone status bar / notch. */
+  .drawer-bar { position: sticky; top: -16px; z-index: 1; margin: -16px -16px 10px; padding: 10px 12px;
+                padding-top: max(10px, env(safe-area-inset-top)); background: var(--panel); border-bottom: 1px solid var(--line); }
+  #close { font-weight: 600; }
   .row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 8px; padding: 6px 0;
          border-top: 1px solid var(--line); align-items: baseline; }
   .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -132,7 +135,7 @@
     .row .stats { grid-column: 2 / -1; grid-row: 2; display: flex; flex-wrap: wrap; gap: 2px 12px; align-items: baseline; }
     .row .stats .move { display: contents; }
     .row .stats .eps, .row .stats .move { text-align: left; }
-    #detail { width: 100vw; padding-top: max(16px, env(safe-area-inset-top)); }
+    #detail { width: 100vw; }
     button, select, input { padding: 8px 10px; }
   }
 </style>
@@ -170,7 +173,7 @@
 </main>
 <footer id="footer"></footer>
 <div id="shade"></div>
-<aside id="detail"><button id="close" aria-label="Close">&times;</button><div id="detail-body"></div></aside>
+<aside id="detail"><div class="drawer-bar"><button id="close">&lsaquo; Back to calendar</button></div><div id="detail-body"></div></aside>
 
 <script src="calendar_data.js"></script>
 <script>
@@ -322,7 +325,7 @@ function openDetail(key) {
     watch.has(t) ? watch.delete(t) : watch.add(t);
     saveWatch(); render(); openDetail(detailKey);
   };
-  document.body.classList.add("open");
+  showDrawer();
 }
 
 const HAS_SERVER = ["localhost", "127.0.0.1"].includes(location.hostname);   // Reddit pulls need serve.py
@@ -385,9 +388,20 @@ function openWatchlist() {
   for (const b of el("detail-body").querySelectorAll("[data-remove]")) b.onclick = () => {
     watch.delete(b.dataset.remove); saveWatch(); render(); openWatchlist();
   };
+  showDrawer();
+}
+// Opening the panel adds a history entry, so the phone's back gesture (or the
+// browser back button) closes the panel instead of leaving the page.
+function showDrawer() {
+  if (!document.body.classList.contains("open")) {
+    history.pushState({ drawer: true }, "");
+    el("detail").scrollTop = 0;
+  }
   document.body.classList.add("open");
 }
-const closeDetail = () => document.body.classList.remove("open");
+const hideDrawer = () => document.body.classList.remove("open");
+const closeDetail = () => { if (history.state && history.state.drawer) history.back(); else hideDrawer(); };
+window.addEventListener("popstate", hideDrawer);
 
 function step(n) {
   cursor = mode === "month" ? new Date(cursor.getFullYear(), cursor.getMonth() + n, 1) : addDays(monday(cursor), 7 * n);
