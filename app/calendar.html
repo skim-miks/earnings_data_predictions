@@ -95,6 +95,15 @@
   .watch-add input { flex: 1; min-width: 0; }
   .watch-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
   .watch-item .meta { color: var(--muted); font-size: 12px; }
+  .row.has-ctx { cursor: pointer; }
+  .row .more-ind { color: var(--muted); font-size: 11px; }
+  .ctx { grid-column: 1 / -1; font-size: 12px; border-left: 2px solid var(--line); padding: 2px 0 4px 10px;
+         display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; cursor: default; }
+  .ctx[hidden] { display: none; }
+  .ctx dt { color: var(--muted); white-space: nowrap; }
+  .ctx dd { margin: 0; }
+  .ctx .asof { grid-column: 1 / -1; color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .up { color: var(--during-fg); } .down { color: var(--hot); }
   .sortbar { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 8px; }
   .sortbar select { padding: 2px 6px; font-size: 12px; }
   .row button { padding: 2px 8px; font-size: 12px; }
@@ -164,7 +173,11 @@
 <div id="shade"></div>
 <aside id="detail"><div class="drawer-bar"><button id="close">&lsaquo; Back to calendar</button></div><div id="detail-body"></div></aside>
 
-<script src="calendar_data.js"></script>
+<script>
+  // The data file is rebuilt daily; the hourly stamp stops browsers and the
+  // home-screen app from showing a cached copy.
+  document.write('<script src="calendar_data.js?v=' + Math.floor(Date.now() / 3.6e6) + '"><\/script>');
+</script>
 <script>
 const DATA = window.EARNINGS_CALENDAR || { events: [], generated: "never" };
 const MAX_CHIPS = 8;
@@ -281,6 +294,29 @@ function render() {
     (DATA.scores_as_of ? `Move chances are a model estimate of a 5% or larger move in either direction, using prices through ${DATA.scores_as_of}; they say nothing about direction.` : "");
 }
 
+// Analyst, estimate, short-interest, insider and options context from the daily snapshot.
+const openCtx = new Set();
+const signedPct = (v, d = 1) => `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${(v * 100).toFixed(d)}%</span>`;
+const ratingLabel = r => r <= 1.5 ? "Strong buy" : r <= 2.5 ? "Buy" : r <= 3.5 ? "Hold" : r <= 4.5 ? "Sell" : "Strong sell";
+const shortDate = s => parse(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+function contextHtml(c) {
+  const line = (label, value) => value ? `<dt>${label}</dt><dd>${value}</dd>` : "";
+  const has = v => v != null;
+  let html = "";
+  if (has(c.implied_move)) html += line("Options", `imply a ±${pct(c.implied_move, 1)} move through ${shortDate(c.implied_expiry)}`);
+  if (has(c.rating)) html += line("Analysts", `${ratingLabel(c.rating)} (${c.rating.toFixed(2)} on a 1–5 scale)` +
+    (has(c.buys) ? ` · ${c.buys} buy, ${c.holds} hold, ${c.sells} sell` : ""));
+  if (has(c.target)) html += line("Price target", `$${c.target.toFixed(2)} average` + (has(c.target_upside) ? `, ${signedPct(c.target_upside)} vs price` : ""));
+  if (has(c.eps_est)) html += line("EPS estimate", `${c.eps_est.toFixed(2)}` +
+    (has(c.eps_chg_30d) ? ` · ${signedPct(c.eps_chg_30d)} in 30 days` : "") + (has(c.eps_chg_90d) ? `, ${signedPct(c.eps_chg_90d)} in 90` : ""));
+  if (has(c.rev_up_30d)) html += line("Revisions", `${c.rev_up_30d} up, ${c.rev_down_30d} down in the last 30 days`);
+  if (has(c.revenue_est_m)) html += line("Revenue est.", `${fmtCap(c.revenue_est_m)}` + (has(c.revenue_growth) ? `, ${signedPct(c.revenue_growth)} vs a year ago` : ""));
+  if (has(c.short_pct)) html += line("Short interest", `${pct(c.short_pct, 1)} of float` +
+    (has(c.short_days) ? `, ${c.short_days} days to cover` : "") + (has(c.short_chg) ? `, ${c.short_chg > 0 ? "+" : ""}${(c.short_chg * 100).toFixed(1)}% vs prior month` : ""));
+  if (has(c.insider_buys)) html += line("Insiders", `${c.insider_buys} buys, ${c.insider_sells} sells in 6 months`);
+  return html + `<div class="asof">Yahoo Finance, as of ${c.as_of}</div>`;
+}
+
 function openDetail(key) {
   detailKey = key;
   const list = [...(byDate(filtered()).get(key) || [])];
@@ -297,16 +333,26 @@ function openDetail(key) {
       const eps = e.eps_est == null ? "" : `EPS est ${e.eps_est.toFixed(2)}`;
       const move = e.p_big_move == null ? "" :
         `<div class="move"><div class="p${hot(e)}" title="Model's chance of a 5% or larger move, up or down">${pct(e.p_big_move)} chance of ±5%</div>` +
-        (e.past_move == null ? "" : `<div class="past" title="Average absolute move on its last 8 reports">past avg ±${pct(e.past_move, 1)}</div>`) + `</div>`;
-      html += `<div class="row"><span class="chip ${e.session}">${e.ticker}</span>` +
-        `<div><div class="name">${e.company}</div><div class="meta">${[e.sector, fmtCap(e.mcap_m)].filter(Boolean).join(" · ")}</div></div>` +
+        (e.past_move == null ? "" : `<div class="past" title="Average absolute move on its last 8 reports">past avg ±${pct(e.past_move, 1)}</div>`) +
+        (e.ctx && e.ctx.implied_move != null ? `<div class="past" title="Move priced in by options through ${e.ctx.implied_expiry}">options imply ±${pct(e.ctx.implied_move, 1)}</div>` : "") + `</div>`;
+      html += `<div class="row${e.ctx ? " has-ctx" : ""}" data-ctx="${e.ticker}"><span class="chip ${e.session}">${e.ticker}</span>` +
+        `<div><div class="name">${e.company}</div><div class="meta">${[e.sector, fmtCap(e.mcap_m)].filter(Boolean).join(" · ")}` +
+        `${e.ctx ? ` <span class="more-ind">${openCtx.has(e.ticker) ? "▾" : "▸"} details</span>` : ""}</div></div>` +
         `<div class="stats">${move}<div class="eps">${eps}</div></div>` +
         `<button class="star${watch.has(e.ticker) ? " on" : ""}" data-star="${e.ticker}" title="Add to or remove from watchlist">${watch.has(e.ticker) ? "★" : "☆"}</button>` +
+        (e.ctx ? `<dl class="ctx"${openCtx.has(e.ticker) ? "" : " hidden"}>${contextHtml(e.ctx)}</dl>` : "") +
         `</div>`;
     }
   }
   el("detail-body").innerHTML = html;
   el("detail-sort").onchange = ev => { detailSort = ev.target.value; openDetail(detailKey); };
+  for (const r of el("detail-body").querySelectorAll(".row.has-ctx")) r.onclick = ev => {
+    if (ev.target.closest("button, .ctx")) return;
+    const t = r.dataset.ctx;
+    openCtx.has(t) ? openCtx.delete(t) : openCtx.add(t);
+    r.querySelector(".ctx").hidden = !openCtx.has(t);
+    r.querySelector(".more-ind").textContent = `${openCtx.has(t) ? "▾" : "▸"} details`;
+  };
   for (const b of el("detail-body").querySelectorAll("[data-star]")) b.onclick = () => {
     const t = b.dataset.star;
     watch.has(t) ? watch.delete(t) : watch.add(t);

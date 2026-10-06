@@ -16,7 +16,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write   # to push the daily snapshot to the snapshots branch
   pages: write
   id-token: write
 
@@ -50,6 +50,31 @@ jobs:
             uv run collect_data.py earnings --within-days 14
           fi
       - run: uv run collect_data.py profiles
+      # Analyst, estimate, short-interest and options data for companies reporting soon.
+      # Yahoo only serves current values, so each day's file is kept on the snapshots
+      # branch to build a history. A failure here does not stop the refresh.
+      - name: Restore earlier snapshots
+        run: |
+          git fetch origin snapshots:snapshots || true
+          if git show-ref --quiet refs/heads/snapshots; then
+            git worktree add ../snapshots snapshots
+          else
+            git worktree add --orphan -b snapshots ../snapshots
+          fi
+          mkdir -p data/snapshots
+          ls ../snapshots/*.parquet 2>/dev/null | tail -5 | xargs -I{} cp {} data/snapshots/
+      - name: Take today's snapshot
+        continue-on-error: true
+        run: uv run collect_snapshot.py --within-days 14
+      - name: Save the snapshot
+        continue-on-error: true
+        run: |
+          cp data/snapshots/*.parquet ../snapshots/
+          cd ../snapshots
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || (git commit -q -m "Snapshot $(date -u +%F)" && git push -q origin snapshots)
       - run: uv run collect_data.py combine --min-tickers 800
       - run: uv run build_dataset.py
       - run: uv run train_model.py

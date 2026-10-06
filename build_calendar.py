@@ -17,6 +17,8 @@ from collect_data import EARNINGS_DIR, load_universe
 
 OUT = Path(__file__).parent / "app" / "calendar_data.js"
 SCORES = Path(__file__).parent / "data" / "processed" / "upcoming_scores.parquet"
+SNAPSHOTS = Path(__file__).parent / "data" / "snapshots"   # from collect_snapshot.py
+SNAPSHOT_MAX_AGE_DAYS = 5
 TZ = "America/New_York"
 TOP_N = 500   # default calendar view: the largest companies by current market cap
 
@@ -28,6 +30,42 @@ def session(ts: pd.Series) -> pd.Series:
     out[hour < 9.5] = "bmo"
     out[hour >= 15] = "amc"
     return out
+
+
+def pct_change(now, before):
+    return (now - before) / before.abs().where(before.abs() > 0)
+
+
+def load_context() -> dict[str, dict]:
+    """Latest analyst / estimate / short-interest / options snapshot per ticker, shaped for the app."""
+    files = sorted(SNAPSHOTS.glob("*.parquet"))[-SNAPSHOT_MAX_AGE_DAYS:]
+    if not files:
+        return {}
+    s = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    cutoff = (pd.Timestamp.now(tz=TZ) - pd.Timedelta(days=SNAPSHOT_MAX_AGE_DAYS)).strftime("%Y-%m-%d")
+    s = s[s["snapshot_date"] >= cutoff].sort_values("snapshot_ts").drop_duplicates("ticker", keep="last")
+    for col in ("implied_move", "implied_move_expiry"):
+        if col not in s:
+            s[col] = None
+    c = pd.DataFrame({
+        "ticker": s["ticker"], "as_of": s["snapshot_ts"],
+        "rating": s["rating_mean"].round(2), "analysts": s["analysts"],
+        "buys": s["rating_strong_buy"] + s["rating_buy"], "holds": s["rating_hold"],
+        "sells": s["rating_sell"] + s["rating_strong_sell"],
+        "target": s["target_mean"].round(2), "target_upside": (s["target_mean"] / s["price"] - 1).round(4),
+        "eps_est": s["eps_est_now"].round(2),
+        "eps_chg_30d": pct_change(s["eps_est_now"], s["eps_est_30d_ago"]).round(4),
+        "eps_chg_90d": pct_change(s["eps_est_now"], s["eps_est_90d_ago"]).round(4),
+        "rev_up_30d": s["eps_rev_up_30d"], "rev_down_30d": s["eps_rev_down_30d"],
+        "revenue_est_m": (s["rev_est_now"] / 1e6).round(0), "revenue_growth": s["rev_est_growth"].round(4),
+        "short_pct": s["short_pct_float"].round(4), "short_days": s["short_days_to_cover"].round(1),
+        "short_chg": (s["shares_short"] / s["shares_short_prior"] - 1).round(4),
+        "insider_buys": s["insider_buys_6m"], "insider_sells": s["insider_sells_6m"],
+        "implied_move": pd.to_numeric(s["implied_move"], errors="coerce").round(4),
+        "implied_expiry": s["implied_move_expiry"],
+    })
+    records = json.loads(c.to_json(orient="records"))
+    return {r.pop("ticker"): r for r in records}
 
 
 def main() -> None:
@@ -66,6 +104,9 @@ def main() -> None:
     cols = ["ticker", "company", "sector", "industry", "mcap_m", "date", "session", "eps_est",
             "p_big_move", "past_move", "top"]
     records = json.loads(upcoming[cols].to_json(orient="records"))
+    context = load_context()
+    for r in records:
+        r["ctx"] = context.get(r["ticker"])
     payload = {
         "generated": pd.Timestamp.now(tz=TZ).strftime("%Y-%m-%d %H:%M %Z"),
         "quarter": f"Q{quarter.quarter} {quarter.year}",
@@ -78,6 +119,7 @@ def main() -> None:
     }
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text("window.EARNINGS_CALENDAR = " + json.dumps(payload) + ";\n")
+    print(f"{sum(r['ctx'] is not None for r in records)} with analyst/options context")
     print(f"{len(records)} upcoming events for {upcoming['ticker'].nunique()} companies "
           f"({upcoming['date'].min()} to {upcoming['date'].max()}) -> {OUT}")
 

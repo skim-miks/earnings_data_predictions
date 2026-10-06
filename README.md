@@ -45,8 +45,13 @@ https://skim-miks.github.io/earnings_data_predictions/ and can be added to a
 phone's home screen (Safari: Share, then Add to Home Screen).
 
 - `.github/workflows/pages.yml` publishes `app/` whenever it changes on `main`.
+- `collect_snapshot.py` saves one file per day of analyst ratings, price targets, estimate
+  trends and revisions, short interest, insider activity and the options-implied move for
+  companies reporting within two weeks. Yahoo only serves current values for these, so the
+  daily files (kept on the `snapshots` branch) are the only way to build a history. The
+  latest snapshot is shown in the calendar when a company row is expanded.
 - `.github/workflows/refresh.yml` runs on weekdays after the US close: it re-pulls
   prices, company profiles and earnings (only companies reporting within two weeks
-  or that just reported; every company on Fridays), rebuilds the dataset, retrains the
+  or that just reported; every company on Fridays), takes the daily snapshot, rebuilds the dataset, retrains the
   move-size model, rebuilds the calendar data and publishes it. It can also be
   started by hand from the Actions tab.
