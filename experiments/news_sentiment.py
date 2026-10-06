@@ -7,7 +7,7 @@ Usage:
 Headlines come from Google News search (RSS) for the company name plus a
 finance term, over the 14 days before each report. Only headlines dated before
 the report date are kept, so nothing written after the announcement leaks in.
-Sentiment is the same word-list scorer the Reddit panel uses.
+Sentiment is the word-list scorer in sentiment.py.
 """
 
 import json
@@ -27,7 +27,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import reddit  # noqa: E402  (shared sentiment scorer)
+import sentiment  # noqa: E402
 import train_model as tm  # noqa: E402
 from collect_data import RAW  # noqa: E402
 
@@ -94,7 +94,7 @@ def news_features(ticker: str, day: pd.Timestamp) -> dict | None:
         return None
     # Strictly before the report date: the feed only gives dates, not times.
     items = [h for h in json.loads(path.read_text()) if h["date"] < f"{day:%Y-%m-%d}"]
-    scores = np.array([reddit._analyzer.polarity_scores(h["title"])["compound"] for h in items])
+    scores = np.array([sentiment.score(h["title"]) for h in items])
     last_week = np.array([h["date"] >= f"{day - pd.Timedelta(days=7):%Y-%m-%d}" for h in items], dtype=bool)
     return {
         "news_count": len(items),

@@ -32,13 +32,11 @@ Outputs go to `data/raw/` (not committed):
 ## App
 
 ```bash
-uv run build_calendar.py   # refresh app/calendar_data.js from the earnings pull
-uv run serve.py            # http://localhost:8765/calendar.html
+uv run build_calendar.py                      # refresh app/calendar_data.js
+python3 -m http.server 8765 --directory app   # http://localhost:8765/calendar.html
 ```
 
-The calendar shows this quarter's upcoming reports in month and week views. Clicking a date lists the companies reporting; the Reddit button next to a company pulls the last month of posts about it from a few investing subreddits and stores them in `data/reddit/`. Reddit is only called for the ticker clicked, and the posts are context for the app, not a model feature.
-
-The Reddit button needs credentials: copy `.env.example` to `.env` and fill it in.
+The calendar shows this quarter's upcoming reports in month and week views, with the move-size model's chance of a 5%+ move for each company. Clicking a date lists the companies reporting. `app/calendar.html` also opens directly as a file.
 
 ## Hosted calendar
 
@@ -52,5 +50,3 @@ phone's home screen (Safari: Share, then Add to Home Screen).
   or that just reported; every company on Fridays), rebuilds the dataset, retrains the
   move-size model, rebuilds the calendar data and publishes it. It can also be
   started by hand from the Actions tab.
-
-The Reddit button only appears when the page is served by `serve.py` on this machine.

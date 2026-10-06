@@ -84,31 +84,20 @@
   .drawer-bar { position: sticky; top: -16px; z-index: 1; margin: -16px -16px 10px; padding: 10px 12px;
                 padding-top: max(10px, env(safe-area-inset-top)); background: var(--panel); border-bottom: 1px solid var(--line); }
   #close { font-weight: 600; }
-  .row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 8px; padding: 6px 0;
+  .row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto auto; gap: 8px; padding: 6px 0;
          border-top: 1px solid var(--line); align-items: baseline; }
   .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .eps { color: var(--muted); font-size: 12px; white-space: nowrap; text-align: right; }
-  .row { grid-template-columns: 58px minmax(0, 1fr) auto auto; }
   .star { border: 0; background: none; padding: 0 2px; font-size: 16px; color: var(--muted); line-height: 1; }
   .star.on { color: #e0a800; }
   .watch-add { display: flex; gap: 6px; margin: 12px 0; }
   .watch-add input { flex: 1; min-width: 0; }
   .watch-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
   .watch-item .meta { color: var(--muted); font-size: 12px; }
-  .row { grid-template-columns: 58px minmax(0, 1fr) auto auto auto; }
   .sortbar { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 8px; }
   .sortbar select { padding: 2px 6px; font-size: 12px; }
   .row button { padding: 2px 8px; font-size: 12px; }
-  .reddit { grid-column: 1 / -1; font-size: 12px; border-left: 2px solid var(--line); padding: 2px 0 4px 10px; }
-  .reddit .stat { color: var(--muted); margin-bottom: 4px; }
-  .reddit .err { color: #c0392b; }
-  .reddit a { color: var(--accent); text-decoration: none; }
-  .reddit a:hover { text-decoration: underline; }
-  .reddit .post { padding: 3px 0; }
-  .reddit .pmeta { color: var(--muted); }
-  .reddit .sent { margin-bottom: 6px; }
-  .pos { color: var(--during-fg); } .neg { color: #d9534f; } .neu { color: var(--muted); }
   footer { color: var(--muted); font-size: 12px; padding: 0 16px 20px; }
   .mini { display: none; color: var(--muted); font-size: 11px; line-height: 1.3; }
   .mini .hotcount { color: var(--hot); font-weight: 600; }
@@ -131,7 +120,7 @@
     .week .grid { grid-template-columns: 1fr; }
     .week .day { min-height: 0; }
     /* Detail rows: name gets the full line, numbers go underneath. */
-    .row { grid-template-columns: 58px minmax(0, 1fr) auto auto; }
+    .row { grid-template-columns: 58px minmax(0, 1fr) auto; }
     .row .stats { grid-column: 2 / -1; grid-row: 2; display: flex; flex-wrap: wrap; gap: 2px 12px; align-items: baseline; }
     .row .stats .move { display: contents; }
     .row .stats .eps, .row .stats .move { text-align: left; }
@@ -313,12 +302,10 @@ function openDetail(key) {
         `<div><div class="name">${e.company}</div><div class="meta">${[e.sector, fmtCap(e.mcap_m)].filter(Boolean).join(" · ")}</div></div>` +
         `<div class="stats">${move}<div class="eps">${eps}</div></div>` +
         `<button class="star${watch.has(e.ticker) ? " on" : ""}" data-star="${e.ticker}" title="Add to or remove from watchlist">${watch.has(e.ticker) ? "★" : "☆"}</button>` +
-        (HAS_SERVER ? `<button data-reddit="${e.ticker}">Reddit</button>` : "<span></span>") +
-        `<div class="reddit" id="reddit-${e.ticker}" hidden></div></div>`;
+        `</div>`;
     }
   }
   el("detail-body").innerHTML = html;
-  for (const b of el("detail-body").querySelectorAll("[data-reddit]")) b.onclick = () => pullReddit(b);
   el("detail-sort").onchange = ev => { detailSort = ev.target.value; openDetail(detailKey); };
   for (const b of el("detail-body").querySelectorAll("[data-star]")) b.onclick = () => {
     const t = b.dataset.star;
@@ -328,47 +315,7 @@ function openDetail(key) {
   showDrawer();
 }
 
-const HAS_SERVER = ["localhost", "127.0.0.1"].includes(location.hostname);   // Reddit pulls need serve.py
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-function ago(utc) {
-  const h = (Date.now() / 1000 - utc) / 3600;
-  return h < 1 ? "just now" : h < 24 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`;
-}
-
-const sentClass = v => v >= 0.05 ? "pos" : v <= -0.05 ? "neg" : "neu";
-const signed = v => (v > 0 ? "+" : "") + v.toFixed(2);
-function sentLine(name, s) {
-  if (!s) return "";
-  return `<div><strong>${name}:</strong> <span class="${sentClass(s.mean)}">${signed(s.mean)}</span> ` +
-    `<span class="pmeta">(${s.positive} positive, ${s.neutral} neutral, ${s.negative} negative)</span></div>`;
-}
-
-// Calls Reddit only for the ticker whose button was clicked.
-async function pullReddit(button) {
-  const ticker = button.dataset.reddit, box = el(`reddit-${ticker}`);
-  box.hidden = false;
-  if (location.protocol === "file:") {
-    box.innerHTML = `<span class="err">Reddit pulls need the local server: run "uv run serve.py" and open http://localhost:8765/calendar.html</span>`;
-    return;
-  }
-  button.disabled = true; box.innerHTML = `<span class="stat">Pulling from Reddit…</span>`;
-  try {
-    const res = await fetch(`/api/reddit/${ticker}`, { method: "POST" });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.statusText);
-    box.innerHTML = `<div class="stat">${data.posts_7d} posts in the last 7 days, ${data.posts_30d} in the last 30 ` +
-      `· searched ${esc(data.query)} · pulled ${data.last_pulled}</div>` +
-      `<div class="sent">${sentLine("Sentiment, 7 days", data.sentiment_7d)}${sentLine("Sentiment, 30 days", data.sentiment_30d)}</div>` +
-      (data.posts.length ? data.posts.map(p =>
-        `<div class="post"><a href="${esc(p.permalink)}" target="_blank" rel="noopener">${esc(p.title)}</a>` +
-        `<div class="pmeta">r/${esc(p.subreddit)} · ${p.score} points · ${p.num_comments} comments · ${ago(p.created_utc)} · <span class="${sentClass(p.sentiment)}">${signed(p.sentiment)}</span></div></div>`).join("")
-        : `<div class="stat">No posts found.</div>`);
-  } catch (err) {
-    box.innerHTML = `<span class="err">${esc(err.message)}</span>`;
-  } finally {
-    button.disabled = false;
-  }
-}
 function openWatchlist() {
   const byTicker = new Map(DATA.events.map(e => [e.ticker, e]));
   const items = [...watch].sort().map(t => {

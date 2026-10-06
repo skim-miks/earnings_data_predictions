@@ -4,6 +4,7 @@ Usage:
     uv run collect_data.py earnings   # earnings dates, EPS estimate/actual/surprise
     uv run collect_data.py earnings --within-days 14   # only companies reporting soon or just reported
     uv run collect_data.py prices     # daily OHLCV for universe + benchmarks
+    uv run collect_data.py analysts   # dated analyst rating and price-target changes
     uv run collect_data.py profiles   # current name, sector, industry, HQ, market cap, revenue
     uv run collect_data.py combine    # merge per-ticker files and print a summary
 
@@ -26,6 +27,7 @@ RAW = ROOT / "data" / "raw"
 EARNINGS_DIR = RAW / "earnings"
 PRICES_DIR = RAW / "prices"
 PROFILES = RAW / "universe.parquet"
+ANALYSTS_DIR = RAW / "analysts"
 
 # Modeling window starts in 2018. Prices start a year earlier so 1-year
 # lookback features exist for the first events.
@@ -200,6 +202,32 @@ def collect_profiles() -> None:
     print(f"profiles for {len(df)} of {len(tickers)} tickers")
 
 
+def collect_analysts(refresh: bool, pause: float) -> None:
+    """Every analyst rating / price-target action Yahoo has for each ticker, with its timestamp."""
+    ANALYSTS_DIR.mkdir(parents=True, exist_ok=True)
+    tickers = load_tickers()
+    got = 0
+    for i, ticker in enumerate(tickers, 1):
+        out = ANALYSTS_DIR / f"{ticker}.parquet"
+        if out.exists() and not refresh:
+            continue
+        try:
+            df = yf.Ticker(ticker).upgrades_downgrades
+        except Exception as e:
+            print(f"[{i}/{len(tickers)}] {ticker}: {type(e).__name__}")
+            time.sleep(10)
+            continue
+        if df is not None and len(df):
+            df = df.reset_index()
+            df.insert(0, "ticker", ticker)
+            df.to_parquet(out, index=False)
+            got += 1
+        if i % 100 == 0:
+            print(f"[{i}/{len(tickers)}]", flush=True)
+        time.sleep(pause)
+    print(f"done. {got} tickers written")
+
+
 def report_timing(ts: pd.Series) -> pd.Series:
     """Classify the ET report time: before open, after close, or during the session."""
     t = ts.dt.time
@@ -239,7 +267,7 @@ def combine(min_tickers: int = 0) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("step", choices=["earnings", "prices", "profiles", "combine"])
+    parser.add_argument("step", choices=["earnings", "prices", "analysts", "profiles", "combine"])
     parser.add_argument("--refresh", action="store_true", help="re-pull tickers that already have a file")
     parser.add_argument("--min-tickers", type=int, default=0, help="combine: fail if fewer tickers were pulled")
     parser.add_argument("--within-days", type=int, default=None,
@@ -251,6 +279,8 @@ if __name__ == "__main__":
         collect_earnings(args.refresh, args.pause, args.within_days)
     elif args.step == "prices":
         collect_prices(args.refresh, args.pause)
+    elif args.step == "analysts":
+        collect_analysts(args.refresh, args.pause)
     elif args.step == "profiles":
         collect_profiles()
     else:
