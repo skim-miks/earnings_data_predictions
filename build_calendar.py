@@ -70,22 +70,18 @@ def load_context() -> dict[str, dict]:
     return {r.pop("ticker"): r for r in records}
 
 
-def load_results(universe: pd.DataFrame, top: set[str]) -> list[dict]:
-    """Track record: the latest prediction made before each report, next to what the stock then did.
+def load_reported(events: pd.DataFrame, universe: pd.DataFrame, top: set[str]) -> list[dict]:
+    """Companies that have reported this quarter, with the stock's reaction and, where one
+    was made, the model's latest prediction from before the report.
 
     The reaction is computed from prices the same way as the training target: the report
     day's close-to-close move for before-open reports, the next session's for after-close.
+    A report only appears once that session has closed.
     """
-    if not PREDICTIONS.exists():
-        return []
-    log = pd.read_parquet(PREDICTIONS)
-    log["logged_at"] = pd.to_datetime(log["logged_at"])
-    log["report_time"] = report_time(log["earnings_date"], log["report_timing"])
-    before = log[log["report_time"] < pd.Timestamp.now(tz=TZ).tz_localize(None)]
-
-    # A logged date only counts if Yahoo still shows a report on that date (dates do move).
-    earnings = pd.read_parquet(RAW / "earnings.parquet")
-    confirmed = set(zip(earnings["ticker"], earnings["earnings_date"].astype(str)))
+    predictions = {}
+    if PREDICTIONS.exists():
+        log = pd.read_parquet(PREDICTIONS)
+        predictions = {(r.ticker, r.earnings_date): r for r in log.itertuples()}
 
     snaps = sorted(SNAPSHOTS.glob("*.parquet"))
     implied = pd.DataFrame(columns=["ticker", "earnings_date", "implied_move", "taken"])
@@ -100,31 +96,35 @@ def load_results(universe: pd.DataFrame, top: set[str]) -> list[dict]:
     by_ticker = {t: (g["date"].values, g["Adj Close"].values) for t, g in prices.groupby("ticker")}
     names = universe.set_index("ticker")
 
-    results = []
-    for r in before.itertuples():
-        if (r.ticker, r.earnings_date) not in confirmed or r.ticker not in by_ticker or r.ticker not in names.index:
+    reported = []
+    for r in events.itertuples():
+        if r.ticker not in by_ticker or r.ticker not in names.index:
             continue
         dates, adj = by_ticker[r.ticker]
-        day = np.datetime64(r.earnings_date)
-        if r.report_timing == "bmo":
-            react = np.searchsorted(dates, day, side="left")
-            base = react - 1
-        else:
+        day = np.datetime64(r.date)
+        if r.session == "amc":
             base = np.searchsorted(dates, day, side="right") - 1
             react = base + 1
+        else:
+            react = np.searchsorted(dates, day, side="left")
+            base = react - 1
         if base < 0 or react >= len(dates) or (dates[react] - day) / np.timedelta64(1, "D") > 5:
-            continue   # the reaction session has not happened yet
-        opts = implied[(implied["ticker"] == r.ticker) & (implied["earnings_date"] == r.earnings_date)
-                       & (implied["taken"] < r.report_time)].sort_values("taken")
-        results.append({
+            continue   # the reaction session has not closed yet
+        when = report_time(pd.Series([r.date]), pd.Series([r.session]))[0]
+        pred = predictions.get((r.ticker, r.date))
+        opts = implied[(implied["ticker"] == r.ticker) & (implied["earnings_date"] == r.date)
+                       & (implied["taken"] < when)].sort_values("taken")
+        reported.append({
             "ticker": r.ticker, "company": names.at[r.ticker, "company"], "sector": names.at[r.ticker, "sector"],
-            "date": r.earnings_date, "session": r.report_timing,
+            "mcap_m": names.at[r.ticker, "mcap_m"], "date": r.date, "session": r.session,
             "reaction_date": pd.Timestamp(dates[react]).strftime("%Y-%m-%d"),
-            "p_big_move": round(float(r.p_big_move), 3), "predicted_on": r.logged_at.strftime("%Y-%m-%d"),
+            "actual": round(float(adj[react] / adj[base] - 1), 4),
+            "p_big_move": round(float(pred.p_big_move), 3) if pred else None,
+            "predicted_on": pred.logged_at[:10] if pred else None,
             "implied_move": round(float(opts["implied_move"].iloc[-1]), 4) if len(opts) else None,
-            "actual": round(float(adj[react] / adj[base] - 1), 4), "top": r.ticker in top,
+            "top": r.ticker in top,
         })
-    return sorted(results, key=lambda x: (x["reaction_date"], x["ticker"]), reverse=True)
+    return sorted(reported, key=lambda x: (x["reaction_date"], x["mcap_m"] or 0), reverse=True)
 
 
 def main() -> None:
@@ -135,6 +135,7 @@ def main() -> None:
     quarter = today.tz_localize(None).to_period("Q")
     quarter_end = quarter.end_time.tz_localize(TZ)
     upcoming = earnings[(ts >= today) & (ts <= quarter_end)].copy()
+    all_ts = ts
     ts = ts[upcoming.index]
     upcoming["date"] = ts.dt.strftime("%Y-%m-%d")
     upcoming["session"] = session(ts)
@@ -162,6 +163,14 @@ def main() -> None:
 
     cols = ["ticker", "company", "sector", "industry", "mcap_m", "date", "session", "eps_est",
             "p_big_move", "past_move", "top"]
+    # Reports already made this quarter move from "upcoming" to "reported" once their
+    # reaction session has closed.
+    past = earnings[(all_ts >= quarter.start_time.tz_localize(TZ)) & (all_ts < pd.Timestamp.now(tz=TZ))]
+    past = pd.DataFrame({"ticker": past["ticker"], "date": all_ts[past.index].dt.strftime("%Y-%m-%d"),
+                         "session": session(all_ts[past.index])}).drop_duplicates(["ticker", "date"])
+    reported = load_reported(past, f, top)
+    done = {(r["ticker"], r["date"]) for r in reported}
+    upcoming = upcoming[[key not in done for key in zip(upcoming["ticker"], upcoming["date"])]]
     records = json.loads(upcoming[cols].to_json(orient="records"))
     context = load_context()
     for r in records:
@@ -175,12 +184,12 @@ def main() -> None:
         "top_n": TOP_N,
         "caps_as_of": caps_as_of,
         "events": records,
-        "results": load_results(f, top),
+        "reported": reported,
     }
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text("window.EARNINGS_CALENDAR = " + json.dumps(payload) + ";\n")
     print(f"{sum(r['ctx'] is not None for r in records)} with analyst/options context")
-    print(f"{len(payload['results'])} past reports in the track record")
+    print(f"{len(reported)} reported this quarter, {sum(r['p_big_move'] is not None for r in reported)} with a prediction on record")
     print(f"{len(records)} upcoming events for {upcoming['ticker'].nunique()} companies "
           f"({upcoming['date'].min()} to {upcoming['date'].max()}) -> {OUT}")
 

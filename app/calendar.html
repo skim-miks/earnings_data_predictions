@@ -66,6 +66,12 @@
   .chips { display: flex; flex-wrap: wrap; gap: 3px; }
   .more { color: var(--muted); font-size: 12px; }
   .chip.hot { box-shadow: 0 0 0 1.5px var(--hot); }
+  /* Already reported: outlined, coloured by the direction of the reaction, bold if it moved 5%+. */
+  .chip.done { background: transparent; box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); font-weight: 500; }
+  .chip.done.up { color: var(--during-fg); } .chip.done.down { color: var(--hot); }
+  .chip.done.bigmove { font-weight: 700; box-shadow: inset 0 0 0 1.5px currentColor; }
+  .wmove { margin-left: auto; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .move .p.up, .wmove.up { color: var(--during-fg); } .move .p.down, .wmove.down { color: var(--hot); }
   .move { font-size: 12px; white-space: nowrap; text-align: right; }
   .move .p { font-weight: 600; }
   .move .p.hot { color: var(--hot); }
@@ -182,6 +188,7 @@
     <span><span class="chip bmo">ABC</span> before open</span>
     <span><span class="chip amc">ABC</span> after close</span>
     <span><span class="chip bmo hot">ABC</span> likely big mover</span>
+    <span><span class="chip done up">ABC</span> <span class="chip done down">ABC</span> reported, up / down</span>
   </div>
 </header>
 <main>
@@ -233,11 +240,19 @@ function saveWatch() {
   try { localStorage.setItem("watchlist", JSON.stringify([...watch].sort())); } catch { /* storage unavailable */ }
 }
 
+// Upcoming reports plus the ones already made this quarter (those carry `actual`, the stock's reaction).
+const ITEMS = [...(DATA.reported || []), ...DATA.events];
+const done = e => e.actual != null;
+const dir = e => e.actual > 0 ? "up" : e.actual < 0 ? "down" : "";
+const signedMove = e => `${e.actual > 0 ? "+" : ""}${(e.actual * 100).toFixed(1)}%`;
+const chipClass = e => done(e) ? `chip done ${dir(e)}${Math.abs(e.actual) >= 0.05 ? " bigmove" : ""}` : `chip ${e.session}${hot(e)}`;
+const chipTitle = e => done(e) ? `${e.company}: ${signedMove(e)}` : e.company;
+
 function filtered() {
   const q = el("search").value.trim().toLowerCase();
   const sector = el("sector").value;
   const scope = el("scope").value;
-  return DATA.events.filter(e =>
+  return ITEMS.filter(e =>
     (scope === "all" || (scope === "top" ? e.top : watch.has(e.ticker))) &&
     (!sector || e.sector === sector) &&
     (!q || e.ticker.toLowerCase().startsWith(q) || e.company.toLowerCase().includes(q)));
@@ -261,18 +276,20 @@ function dayCell(d, list, outside) {
   let body;
   if (mode === "month") {
     body = `<div class="chips">` + list.slice(0, MAX_CHIPS).map(e =>
-      `<span class="chip ${e.session}${hot(e)}" title="${e.company}">${e.ticker}</span>`).join("") + `</div>` +
+      `<span class="${chipClass(e)}" title="${chipTitle(e)}">${e.ticker}</span>`).join("") + `</div>` +
       (list.length > MAX_CHIPS ? `<span class="more">+${list.length - MAX_CHIPS} more</span>` : "");
   } else {
     body = SESSIONS.map(s => {
       const group = list.filter(e => e.session === s);
       return group.length ? `<h3>${SESSION_LABEL[s]} (${group.length})</h3>` + group.map(e =>
-        `<div class="wrow"><span class="chip ${e.session}${hot(e)}">${e.ticker}</span><span class="name">${e.company}</span></div>`).join("") : "";
+        `<div class="wrow"><span class="${chipClass(e)}">${e.ticker}</span><span class="name">${e.company}</span>` +
+        (done(e) ? `<span class="wmove ${dir(e)}">${signedMove(e)}</span>` : "") + `</div>`).join("") : "";
     }).join("");
   }
   const label = mode === "month" ? d.getDate() : d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-  const hotCount = list.filter(e => hot(e)).length;
-  const mini = list.length ? `<div class="mini">${list.length}` +
+  const hotCount = list.filter(e => !done(e) && hot(e)).length;
+  const reportedCount = list.filter(done).length;
+  const mini = list.length ? `<div class="mini">${list.length}${reportedCount === list.length ? " reported" : ""}` +
     (hotCount ? ` · <span class="hotcount">${hotCount} big</span>` : "") + `</div>` : "";
   cell.innerHTML = `<div class="day-head"><span class="day-num">${label}</span>` +
     `<span class="count">${list.length || ""}</span></div>${mini}${body}`;
@@ -284,7 +301,7 @@ function dayCell(d, list, outside) {
 const BIG = 0.05;
 function renderResults() {
   const scope = el("scope").value, sector = el("sector").value, q = el("search").value.trim().toLowerCase();
-  const list = (DATA.results || []).filter(r =>
+  const list = (DATA.reported || []).filter(r => r.p_big_move != null).filter(r =>
     (scope === "all" || (scope === "top" ? r.top : watch.has(r.ticker))) &&
     (!sector || r.sector === sector) &&
     (!q || r.ticker.toLowerCase().startsWith(q) || r.company.toLowerCase().includes(q)));
@@ -366,7 +383,7 @@ function render() {
     const outside = mode === "month" && d.getMonth() !== cursor.getMonth();
     grid.appendChild(dayCell(d, map.get(iso(d)) || [], outside));
   }
-  el("footer").textContent = `${events.length} reports from today through the end of ${DATA.quarter}. ` +
+  el("footer").textContent = `${events.filter(e => !done(e)).length} upcoming reports through the end of ${DATA.quarter}, ${events.filter(done).length} already reported. ` +
     `Dates from Yahoo Finance, pulled ${DATA.generated}. Largest ${DATA.top_n} ranked by market value as of ${DATA.caps_as_of}. ` +
     `Dates can move until a company confirms them. ` +
     (DATA.scores_as_of ? `Move chances are a model estimate of a 5% or larger move in either direction, using prices through ${DATA.scores_as_of}; they say nothing about direction.` : "");
@@ -400,7 +417,8 @@ function openDetail(key) {
   const list = [...(byDate(filtered()).get(key) || [])];
   if (detailSort === "move") list.sort((a, b) => (b.p_big_move ?? -1) - (a.p_big_move ?? -1));
   const title = parse(key).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
-  let html = `<h2>${title}</h2><div class="sub">${list.length} ${list.length === 1 ? "company reports" : "companies report"}</div>` +
+  const allDone = list.length > 0 && list.every(done);
+  let html = `<h2>${title}</h2><div class="sub">${list.length} ${list.length === 1 ? "company" : "companies"} ${allDone ? "reported" : list.length === 1 ? "reports" : "report"}</div>` +
     `<div class="sortbar">Sort by <select id="detail-sort"><option value="mcap">Market cap</option>` +
     `<option value="move"${detailSort === "move" ? " selected" : ""}>Chance of a big move</option></select></div>`;
   for (const s of SESSIONS) {
@@ -409,11 +427,15 @@ function openDetail(key) {
     html += `<h3>${SESSION_LABEL[s]} (${group.length})</h3>`;
     for (const e of group) {
       const eps = e.eps_est == null ? "" : `EPS est ${e.eps_est.toFixed(2)}`;
-      const move = e.p_big_move == null ? "" :
+      const move = done(e) ?
+        `<div class="move"><div class="p ${dir(e)}" title="Close-to-close move on ${e.reaction_date}, the first session after the report">${signedMove(e)} actual</div>` +
+        (e.p_big_move == null ? "" : `<div class="past" title="The model's last prediction before the report, made ${e.predicted_on}">model said ${pct(e.p_big_move)} chance of ±5%</div>`) +
+        (e.implied_move == null ? "" : `<div class="past">options implied ±${pct(e.implied_move, 1)}</div>`) + `</div>` :
+        e.p_big_move == null ? "" :
         `<div class="move"><div class="p${hot(e)}" title="Model's chance of a 5% or larger move, up or down">${pct(e.p_big_move)} chance of ±5%</div>` +
         (e.past_move == null ? "" : `<div class="past" title="Average absolute move on its last 8 reports">past avg ±${pct(e.past_move, 1)}</div>`) +
         (e.ctx && e.ctx.implied_move != null ? `<div class="past" title="Move priced in by options through ${e.ctx.implied_expiry}">options imply ±${pct(e.ctx.implied_move, 1)}</div>` : "") + `</div>`;
-      html += `<div class="row${e.ctx ? " has-ctx" : ""}" data-ctx="${e.ticker}"><span class="chip ${e.session}">${e.ticker}</span>` +
+      html += `<div class="row${e.ctx ? " has-ctx" : ""}" data-ctx="${e.ticker}"><span class="${done(e) ? chipClass(e) : "chip " + e.session}">${e.ticker}</span>` +
         `<div><div class="name">${e.company}</div><div class="meta">${[e.sector, fmtCap(e.mcap_m)].filter(Boolean).join(" · ")}` +
         `${e.ctx ? ` <span class="more-ind">${openCtx.has(e.ticker) ? "▾" : "▸"} details</span>` : ""}</div></div>` +
         `<div class="stats">${move}<div class="eps">${eps}</div></div>` +
