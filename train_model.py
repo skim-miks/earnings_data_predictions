@@ -22,9 +22,9 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from build_dataset import BIG_MOVE, PAST_MOVE_FEATURES, PEER_FEATURES
 from build_dataset import OUT as EVENTS
+from collect_data import PREDICTIONS, report_time
 
 SCORES = EVENTS.parent / "upcoming_scores.parquet"
-PREDICTIONS = EVENTS.parent.parent / "predictions"   # one file per day: what the model said, kept for the track record
 TEST_YEARS = [2022, 2023, 2024, 2025, 2026]
 # Chosen in experiments/feature_groups.py: the stock's own past earnings moves, its
 # volatility, how peers moved this season, and sector. EPS, momentum and market
@@ -105,14 +105,17 @@ if __name__ == "__main__":
 
     upcoming = upcoming.assign(p_big_move=fit_predict(hist, upcoming, num))
     upcoming[["ticker", "earnings_date", "p_big_move", "past_move_mean_8", "past_move_last", "feature_date"]].to_parquet(SCORES, index=False)
-    # Scores are overwritten every run, so each day's are also logged. Comparing these
-    # with what happened after each report is the model's live track record.
-    now = pd.Timestamp.now(tz="America/New_York")
-    log = upcoming[["ticker", "earnings_date", "report_timing", "feature_date", "p_big_move", "past_move_mean_8"]].copy()
-    log["earnings_date"] = log["earnings_date"].dt.strftime("%Y-%m-%d")
-    log["feature_date"] = pd.to_datetime(log["feature_date"]).dt.strftime("%Y-%m-%d")
-    log["logged_at"] = now.strftime("%Y-%m-%d %H:%M")
-    PREDICTIONS.mkdir(parents=True, exist_ok=True)
-    log.to_parquet(PREDICTIONS / f"{now:%Y-%m-%d}.parquet", index=False)
+    # Track record: keep the latest prediction made before each report. Rows for reports
+    # still ahead are replaced on every run; once a report has happened its row is frozen.
+    now = pd.Timestamp.now(tz="America/New_York").tz_localize(None)
+    new = upcoming[["ticker", "earnings_date", "report_timing", "feature_date", "p_big_move", "past_move_mean_8"]].copy()
+    new = new[report_time(new["earnings_date"], new["report_timing"]) > now]
+    new["earnings_date"] = new["earnings_date"].dt.strftime("%Y-%m-%d")
+    new["feature_date"] = pd.to_datetime(new["feature_date"]).dt.strftime("%Y-%m-%d")
+    new["logged_at"] = now.strftime("%Y-%m-%d %H:%M")
+    if PREDICTIONS.exists():
+        old = pd.read_parquet(PREDICTIONS)
+        new = pd.concat([old[report_time(old["earnings_date"], old["report_timing"]) <= now], new], ignore_index=True)
+    new.to_parquet(PREDICTIONS, index=False)
     print(f"\nScored {len(upcoming)} upcoming reports -> {SCORES}")
     print(upcoming["p_big_move"].describe().round(3).to_string())

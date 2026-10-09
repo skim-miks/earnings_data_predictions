@@ -28,6 +28,7 @@ EARNINGS_DIR = RAW / "earnings"
 PRICES_DIR = RAW / "prices"
 PROFILES = RAW / "universe.parquet"
 ANALYSTS_DIR = RAW / "analysts"
+PREDICTIONS = RAW.parent / "predictions.parquet"   # latest prediction made before each report
 
 # Modeling window starts in 2018. Prices start a year earlier so 1-year
 # lookback features exist for the first events.
@@ -231,6 +232,12 @@ def collect_analysts(refresh: bool, pause: float) -> None:
             print(f"[{i}/{len(tickers)}]", flush=True)
         time.sleep(pause)
     print(f"done. {got} tickers written")
+
+
+def report_time(earnings_date: pd.Series, timing: pd.Series) -> pd.Series:
+    """Approximate Eastern time of the report: 9:30am for before-open, 4pm for after-close."""
+    hours = timing.map({"bmo": 9.5}).fillna(16)
+    return pd.to_datetime(earnings_date) + pd.to_timedelta(hours, unit="h")
 
 
 def report_timing(ts: pd.Series) -> pd.Series:

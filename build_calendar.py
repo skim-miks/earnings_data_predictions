@@ -15,13 +15,12 @@ import pandas as pd
 
 import numpy as np
 
-from collect_data import EARNINGS_DIR, RAW, load_universe
+from collect_data import EARNINGS_DIR, PREDICTIONS, RAW, load_universe, report_time
 
 OUT = Path(__file__).parent / "app" / "calendar_data.js"
 SCORES = Path(__file__).parent / "data" / "processed" / "upcoming_scores.parquet"
 SNAPSHOTS = Path(__file__).parent / "data" / "snapshots"   # from collect_snapshot.py
 SNAPSHOT_MAX_AGE_DAYS = 5
-PREDICTIONS = Path(__file__).parent / "data" / "predictions"   # daily logs from train_model.py
 TZ = "America/New_York"
 TOP_N = 500   # default calendar view: the largest companies by current market cap
 
@@ -72,21 +71,17 @@ def load_context() -> dict[str, dict]:
 
 
 def load_results(universe: pd.DataFrame, top: set[str]) -> list[dict]:
-    """Track record: the last prediction logged before each report, next to what the stock then did.
+    """Track record: the latest prediction made before each report, next to what the stock then did.
 
     The reaction is computed from prices the same way as the training target: the report
     day's close-to-close move for before-open reports, the next session's for after-close.
     """
-    logs = sorted(PREDICTIONS.glob("*.parquet"))
-    if not logs:
+    if not PREDICTIONS.exists():
         return []
-    log = pd.concat([pd.read_parquet(f) for f in logs], ignore_index=True)
+    log = pd.read_parquet(PREDICTIONS)
     log["logged_at"] = pd.to_datetime(log["logged_at"])
-    log["report_time"] = pd.to_datetime(log["earnings_date"]) + pd.to_timedelta(
-        np.where(log["report_timing"] == "bmo", 9.5, 16), unit="h")
-    # Only what was on record before the report; the latest such entry is the one that counts.
-    before = log[log["logged_at"] < log["report_time"]].sort_values("logged_at")
-    before = before.drop_duplicates(["ticker", "earnings_date"], keep="last")
+    log["report_time"] = report_time(log["earnings_date"], log["report_timing"])
+    before = log[log["report_time"] < pd.Timestamp.now(tz=TZ).tz_localize(None)]
 
     # A logged date only counts if Yahoo still shows a report on that date (dates do move).
     earnings = pd.read_parquet(RAW / "earnings.parquet")
