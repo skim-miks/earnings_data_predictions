@@ -35,13 +35,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync
-      - run: uv run collect_data.py prices
-      # Earnings files carry over between runs so most days only need a partial pull.
+      # Price and earnings files carry over between runs: most days only need a partial
+      # earnings pull, and a company that gets delisted keeps the history already pulled.
       - uses: actions/cache@v4
         with:
-          path: data/raw/earnings
-          key: earnings-${{ github.run_id }}
-          restore-keys: earnings-
+          path: |
+            data/raw/earnings
+            data/raw/prices
+          key: raw-${{ github.run_id }}
+          restore-keys: |
+            raw-
+            earnings-
+      - run: uv run collect_data.py prices --refresh
       - name: Pull earnings (every company on Fridays, otherwise those reporting within 2 weeks)
         run: |
           if [ "$(date -u +%u)" = "5" ] || [ "${{ inputs.full }}" = "true" ]; then

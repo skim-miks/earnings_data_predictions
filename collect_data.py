@@ -146,7 +146,12 @@ def collect_prices(refresh: bool, pause: float, batch_size: int = 40) -> None:
             df = df.reset_index().rename(columns={"Date": "date"})
             df.columns.name = None
             df.insert(0, "ticker", ticker)
-            df.to_parquet(PRICES_DIR / f"{ticker}.parquet", index=False)
+            out = PRICES_DIR / f"{ticker}.parquet"
+            # Once a company is acquired or delisted Yahoo returns only a few stray rows.
+            # Keep the full history already on disk instead of replacing it with those.
+            if out.exists() and len(df) < 0.5 * len(pd.read_parquet(out, columns=["date"])):
+                continue
+            df.to_parquet(out, index=False)
         print(f"[{min(start + batch_size, len(todo))}/{len(todo)}] failed so far: {len(failed)}")
         time.sleep(pause)
     (RAW / "prices_failed.txt").write_text("\n".join(failed))
