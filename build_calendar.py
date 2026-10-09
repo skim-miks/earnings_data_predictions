@@ -13,12 +13,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from collect_data import EARNINGS_DIR, load_universe
+import numpy as np
+
+from collect_data import EARNINGS_DIR, RAW, load_universe
 
 OUT = Path(__file__).parent / "app" / "calendar_data.js"
 SCORES = Path(__file__).parent / "data" / "processed" / "upcoming_scores.parquet"
 SNAPSHOTS = Path(__file__).parent / "data" / "snapshots"   # from collect_snapshot.py
 SNAPSHOT_MAX_AGE_DAYS = 5
+PREDICTIONS = Path(__file__).parent / "data" / "predictions"   # daily logs from train_model.py
 TZ = "America/New_York"
 TOP_N = 500   # default calendar view: the largest companies by current market cap
 
@@ -66,6 +69,67 @@ def load_context() -> dict[str, dict]:
     })
     records = json.loads(c.to_json(orient="records"))
     return {r.pop("ticker"): r for r in records}
+
+
+def load_results(universe: pd.DataFrame, top: set[str]) -> list[dict]:
+    """Track record: the last prediction logged before each report, next to what the stock then did.
+
+    The reaction is computed from prices the same way as the training target: the report
+    day's close-to-close move for before-open reports, the next session's for after-close.
+    """
+    logs = sorted(PREDICTIONS.glob("*.parquet"))
+    if not logs:
+        return []
+    log = pd.concat([pd.read_parquet(f) for f in logs], ignore_index=True)
+    log["logged_at"] = pd.to_datetime(log["logged_at"])
+    log["report_time"] = pd.to_datetime(log["earnings_date"]) + pd.to_timedelta(
+        np.where(log["report_timing"] == "bmo", 9.5, 16), unit="h")
+    # Only what was on record before the report; the latest such entry is the one that counts.
+    before = log[log["logged_at"] < log["report_time"]].sort_values("logged_at")
+    before = before.drop_duplicates(["ticker", "earnings_date"], keep="last")
+
+    # A logged date only counts if Yahoo still shows a report on that date (dates do move).
+    earnings = pd.read_parquet(RAW / "earnings.parquet")
+    confirmed = set(zip(earnings["ticker"], earnings["earnings_date"].astype(str)))
+
+    snaps = sorted(SNAPSHOTS.glob("*.parquet"))
+    implied = pd.DataFrame(columns=["ticker", "earnings_date", "implied_move", "taken"])
+    if snaps:
+        sn = pd.concat([pd.read_parquet(f) for f in snaps], ignore_index=True)
+        if "implied_move" in sn:
+            sn["taken"] = pd.to_datetime(sn["snapshot_ts"].str[:16])
+            implied = sn.dropna(subset=["implied_move"])[["ticker", "earnings_date", "implied_move", "taken"]]
+
+    prices = pd.read_parquet(RAW / "prices.parquet")
+    prices["date"] = pd.to_datetime(prices["date"])
+    by_ticker = {t: (g["date"].values, g["Adj Close"].values) for t, g in prices.groupby("ticker")}
+    names = universe.set_index("ticker")
+
+    results = []
+    for r in before.itertuples():
+        if (r.ticker, r.earnings_date) not in confirmed or r.ticker not in by_ticker or r.ticker not in names.index:
+            continue
+        dates, adj = by_ticker[r.ticker]
+        day = np.datetime64(r.earnings_date)
+        if r.report_timing == "bmo":
+            react = np.searchsorted(dates, day, side="left")
+            base = react - 1
+        else:
+            base = np.searchsorted(dates, day, side="right") - 1
+            react = base + 1
+        if base < 0 or react >= len(dates) or (dates[react] - day) / np.timedelta64(1, "D") > 5:
+            continue   # the reaction session has not happened yet
+        opts = implied[(implied["ticker"] == r.ticker) & (implied["earnings_date"] == r.earnings_date)
+                       & (implied["taken"] < r.report_time)].sort_values("taken")
+        results.append({
+            "ticker": r.ticker, "company": names.at[r.ticker, "company"], "sector": names.at[r.ticker, "sector"],
+            "date": r.earnings_date, "session": r.report_timing,
+            "reaction_date": pd.Timestamp(dates[react]).strftime("%Y-%m-%d"),
+            "p_big_move": round(float(r.p_big_move), 3), "predicted_on": r.logged_at.strftime("%Y-%m-%d"),
+            "implied_move": round(float(opts["implied_move"].iloc[-1]), 4) if len(opts) else None,
+            "actual": round(float(adj[react] / adj[base] - 1), 4), "top": r.ticker in top,
+        })
+    return sorted(results, key=lambda x: (x["reaction_date"], x["ticker"]), reverse=True)
 
 
 def main() -> None:
@@ -116,10 +180,12 @@ def main() -> None:
         "top_n": TOP_N,
         "caps_as_of": caps_as_of,
         "events": records,
+        "results": load_results(f, top),
     }
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text("window.EARNINGS_CALENDAR = " + json.dumps(payload) + ";\n")
     print(f"{sum(r['ctx'] is not None for r in records)} with analyst/options context")
+    print(f"{len(payload['results'])} past reports in the track record")
     print(f"{len(records)} upcoming events for {upcoming['ticker'].nunique()} companies "
           f"({upcoming['date'].min()} to {upcoming['date'].max()}) -> {OUT}")
 

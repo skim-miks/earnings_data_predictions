@@ -50,6 +50,10 @@ phone's home screen (Safari: Share, then Add to Home Screen).
   companies reporting within two weeks. Yahoo only serves current values for these, so the
   daily files (kept on the `snapshots` branch) are the only way to build a history. The
   latest snapshot is shown in the calendar when a company row is expanded.
+- `train_model.py` logs each day's predictions (`data/predictions/`, also kept on the
+  `snapshots` branch). `build_calendar.py` pairs the last prediction saved before each
+  report with the stock's actual reaction, and the calendar's Results view shows that
+  track record.
 - `.github/workflows/refresh.yml` runs on weekdays after the US close: it re-pulls
   prices, company profiles and earnings (only companies reporting within two weeks
   or that just reported; every company on Fridays), takes the daily snapshot, rebuilds the dataset, retrains the

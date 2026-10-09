@@ -43,7 +43,8 @@
   .toggle { display: flex; }
   .toggle button { border-radius: 0; }
   .toggle button:first-child { border-radius: 6px 0 0 6px; }
-  .toggle button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+  .toggle button:last-child { border-radius: 0 6px 6px 0; }
+  .toggle button + button { border-left: 0; }
   .toggle button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   input[type=search] { width: 180px; }
   .legend { display: flex; gap: 10px; margin-left: auto; color: var(--muted); font-size: 12px; align-items: center; }
@@ -104,6 +105,24 @@
   .ctx dd { margin: 0; }
   .ctx .asof { grid-column: 1 / -1; color: var(--muted); font-size: 11px; margin-top: 2px; }
   .up { color: var(--during-fg); } .down { color: var(--hot); }
+  /* Results view: what the model said before each report, and what happened. */
+  #results { display: none; max-width: 760px; margin: 0 auto; }
+  .results #dow, .results #grid { display: none; }
+  .results #results { display: block; }
+  .summary { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+  .summary h2 { font-size: 15px; margin: 0 0 2px; }
+  .summary .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .summary table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .summary th, .summary td { text-align: right; padding: 4px 6px; border-top: 1px solid var(--line); }
+  .summary th:first-child, .summary td:first-child { text-align: left; }
+  .summary th { color: var(--muted); font-weight: 500; font-size: 12px; border-top: 0; }
+  .summary .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .rrow { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 8px; padding: 6px 0;
+          border-top: 1px solid var(--line); align-items: baseline; }
+  .rrow .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rrow .meta { color: var(--muted); font-size: 12px; }
+  .rrow .actual { font-weight: 600; text-align: right; white-space: nowrap; }
+  .rrow .tag { display: block; font-weight: 400; font-size: 11px; color: var(--muted); }
   .sortbar { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 8px; }
   .sortbar select { padding: 2px 6px; font-size: 12px; }
   .row button { padding: 2px 8px; font-size: 12px; }
@@ -143,7 +162,7 @@
   <h1>Earnings Calendar</h1>
   <span class="quarter" id="quarter"></span>
   <div class="toggle">
-    <button id="view-month">Month</button><button id="view-week">Week</button>
+    <button id="view-month">Month</button><button id="view-week">Week</button><button id="view-results">Results</button>
   </div>
   <div class="nav">
     <button id="prev" aria-label="Previous">&larr;</button>
@@ -168,6 +187,7 @@
 <main>
   <div class="grid" id="dow"></div>
   <div class="grid" id="grid" style="margin-top:6px"></div>
+  <div id="results"></div>
 </main>
 <footer id="footer"></footer>
 <div id="shade"></div>
@@ -260,7 +280,65 @@ function dayCell(d, list, outside) {
   return cell;
 }
 
+// Results view: predictions logged before each report next to the actual reaction.
+const BIG = 0.05;
+function renderResults() {
+  const scope = el("scope").value, sector = el("sector").value, q = el("search").value.trim().toLowerCase();
+  const list = (DATA.results || []).filter(r =>
+    (scope === "all" || (scope === "top" ? r.top : watch.has(r.ticker))) &&
+    (!sector || r.sector === sector) &&
+    (!q || r.ticker.toLowerCase().startsWith(q) || r.company.toLowerCase().includes(q)));
+  const box = el("results");
+  if (!list.length) {
+    box.innerHTML = `<div class="summary"><h2>Track record</h2><div class="sub">No tracked reports match yet. ` +
+      `Each night's predictions are saved, and a report appears here once its reaction session has closed.</div></div>`;
+    return;
+  }
+  const buckets = [["Under 30%", r => r.p_big_move < 0.3], ["30% to 60%", r => r.p_big_move >= 0.3 && r.p_big_move < HOT],
+                   ["60% or more (flagged)", r => r.p_big_move >= HOT]];
+  const rows = buckets.map(([label, test]) => {
+    const g = list.filter(test), big = g.filter(r => Math.abs(r.actual) >= BIG).length;
+    const avg = g.reduce((a, r) => a + Math.abs(r.actual), 0) / (g.length || 1);
+    return `<tr><td>${label}</td><td>${g.length}</td><td>${g.length ? `${big} (${pct(big / g.length)})` : "–"}</td>` +
+      `<td>${g.length ? "±" + pct(avg, 1) : "–"}</td></tr>`;
+  }).join("");
+  const withOpt = list.filter(r => r.implied_move != null);
+  const mean = (g, f) => g.reduce((a, r) => a + f(r), 0) / g.length;
+  const first = list[list.length - 1].reaction_date;
+  let html = `<div class="summary"><h2>Track record</h2><div class="sub">${list.length} reports since ${shortDate(first)}. ` +
+    `A "big move" is ${pct(BIG)} or more in either direction.</div>` +
+    `<table><tr><th>Model's chance of a big move</th><th>Reports</th><th>Moved ${pct(BIG)}+</th><th>Average move</th></tr>${rows}</table>` +
+    (withOpt.length ? `<div class="note">Options (${withOpt.length} reports): implied ±${pct(mean(withOpt, r => r.implied_move), 1)} on average, ` +
+      `actual ±${pct(mean(withOpt, r => Math.abs(r.actual)), 1)}.</div>` : "") +
+    (list.length < 100 ? `<div class="note">Too few reports so far to judge the model; this fills in through earnings season.</div>` : "") + `</div>`;
+  let day = null;
+  for (const r of list) {
+    if (r.reaction_date !== day) {
+      day = r.reaction_date;
+      html += `<h3>${parse(day).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</h3>`;
+    }
+    const big = Math.abs(r.actual) >= BIG;
+    html += `<div class="rrow"><span class="chip ${r.session}${r.p_big_move >= HOT ? " hot" : ""}">${r.ticker}</span>` +
+      `<div><div class="name">${r.company}</div><div class="meta">model ${pct(r.p_big_move)} chance of ±${pct(BIG)}` +
+      (r.implied_move != null ? ` · options ±${pct(r.implied_move, 1)}` : "") + ` · predicted ${shortDate(r.predicted_on)}</div></div>` +
+      `<div class="actual"><span class="${r.actual > 0 ? "up" : r.actual < 0 ? "down" : ""}">${r.actual > 0 ? "+" : ""}${(r.actual * 100).toFixed(1)}%</span>` +
+      `<span class="tag">${big ? "big move" : "under " + pct(BIG)}</span></div></div>`;
+  }
+  box.innerHTML = html;
+}
+
 function render() {
+  el("view-results").classList.toggle("on", mode === "results");
+  for (const id of ["prev", "next", "today"]) el(id).style.visibility = mode === "results" ? "hidden" : "";
+  if (mode === "results") {
+    el("grid").parentElement.className = mode;
+    el("view-month").classList.remove("on"); el("view-week").classList.remove("on");
+    el("title").textContent = "Track record";
+    renderResults();
+    el("footer").textContent = "Reactions are close-to-close moves on the first session after the report: the same day for " +
+      "before-open reports, the next day for after-close. Each prediction is the last one saved before the report.";
+    return;
+  }
   const events = filtered();
   const map = byDate(events);
   const grid = el("grid"); grid.innerHTML = "";
@@ -408,6 +486,7 @@ el("next").onclick = () => step(1);
 el("today").onclick = () => { cursor = clamp(new Date()); render(); };
 el("view-month").onclick = () => { mode = "month"; render(); };
 el("view-week").onclick = () => { mode = "week"; render(); };
+el("view-results").onclick = () => { mode = "results"; render(); };
 el("search").oninput = render;
 el("sector").onchange = render;
 el("scope").onchange = render;

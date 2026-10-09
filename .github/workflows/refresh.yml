@@ -53,7 +53,7 @@ jobs:
       # Analyst, estimate, short-interest and options data for companies reporting soon.
       # Yahoo only serves current values, so each day's file is kept on the snapshots
       # branch to build a history. A failure here does not stop the refresh.
-      - name: Restore earlier snapshots
+      - name: Restore earlier snapshots and prediction logs
         run: |
           git fetch origin snapshots:snapshots || true
           if git show-ref --quiet refs/heads/snapshots; then
@@ -61,23 +61,27 @@ jobs:
           else
             git worktree add --orphan -b snapshots ../snapshots
           fi
-          mkdir -p data/snapshots
-          ls ../snapshots/*.parquet 2>/dev/null | tail -5 | xargs -I{} cp {} data/snapshots/
+          mkdir -p data/snapshots data/predictions ../snapshots/predictions
+          cp ../snapshots/*.parquet data/snapshots/ 2>/dev/null || true
+          cp ../snapshots/predictions/*.parquet data/predictions/ 2>/dev/null || true
       - name: Take today's snapshot
         continue-on-error: true
         run: uv run collect_snapshot.py --within-days 14
-      - name: Save the snapshot
+      - run: uv run collect_data.py combine --min-tickers 800
+      - run: uv run build_dataset.py
+      - run: uv run train_model.py
+      # Each day's model predictions are logged next to the snapshots, so they can be
+      # compared with what happened after each report.
+      - name: Save the snapshot and prediction log
         continue-on-error: true
         run: |
-          cp data/snapshots/*.parquet ../snapshots/
+          cp data/snapshots/*.parquet ../snapshots/ || true
+          cp data/predictions/*.parquet ../snapshots/predictions/ || true
           cd ../snapshots
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --quiet || (git commit -q -m "Snapshot $(date -u +%F)" && git push -q origin snapshots)
-      - run: uv run collect_data.py combine --min-tickers 800
-      - run: uv run build_dataset.py
-      - run: uv run train_model.py
       - run: uv run build_calendar.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
