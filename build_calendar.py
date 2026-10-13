@@ -93,14 +93,15 @@ def load_reported(events: pd.DataFrame, universe: pd.DataFrame, top: set[str]) -
 
     prices = pd.read_parquet(RAW / "prices.parquet")
     prices["date"] = pd.to_datetime(prices["date"])
-    by_ticker = {t: (g["date"].values, g["Adj Close"].values) for t, g in prices.groupby("ticker")}
+    prices["adj_open"] = prices["Open"] * prices["Adj Close"] / prices["Close"]
+    by_ticker = {t: (g["date"].values, g["Adj Close"].values, g["adj_open"].values) for t, g in prices.groupby("ticker")}
     names = universe.set_index("ticker")
 
     reported = []
     for r in events.itertuples():
         if r.ticker not in by_ticker or r.ticker not in names.index:
             continue
-        dates, adj = by_ticker[r.ticker]
+        dates, adj, adj_open = by_ticker[r.ticker]
         day = np.datetime64(r.date)
         if r.session == "amc":
             base = np.searchsorted(dates, day, side="right") - 1
@@ -118,8 +119,10 @@ def load_reported(events: pd.DataFrame, universe: pd.DataFrame, top: set[str]) -
             "ticker": r.ticker, "company": names.at[r.ticker, "company"], "sector": names.at[r.ticker, "sector"],
             "mcap_m": names.at[r.ticker, "mcap_m"], "date": r.date, "session": r.session,
             "reaction_date": pd.Timestamp(dates[react]).strftime("%Y-%m-%d"),
-            "actual": round(float(adj[react] / adj[base] - 1), 4),
+            "actual": round(float(adj[react] / adj[base] - 1), 4),             # by the close
+            "actual_gap": round(float(adj_open[react] / adj[base] - 1), 4),    # at the open
             "p_big_move": round(float(pred.p_big_move), 3) if pred else None,
+            "p_big_gap": round(float(pred.p_big_gap), 3) if pred and pd.notna(getattr(pred, "p_big_gap", None)) else None,
             "predicted_on": pred.logged_at[:10] if pred else None,
             "implied_move": round(float(opts["implied_move"].iloc[-1]), 4) if len(opts) else None,
             "top": r.ticker in top,
@@ -149,20 +152,22 @@ def main() -> None:
     upcoming["top"] = upcoming["ticker"].isin(top)
     upcoming = upcoming.rename(columns={"EPS Estimate": "eps_est"})
     # Move-size model output (train_model.py): chance of a 5%+ move either way.
-    upcoming["p_big_move"] = None
-    upcoming["past_move"] = None
+    score_cols = ["p_big_move", "p_big_gap", "past_move", "past_gap"]
+    for col in score_cols:
+        upcoming[col] = None
     scores_as_of = None
     if SCORES.exists():
         scores = pd.read_parquet(SCORES)
         scores_as_of = scores["feature_date"].max().strftime("%Y-%m-%d")
         scores["date"] = scores["earnings_date"].dt.strftime("%Y-%m-%d")
-        scores = scores.rename(columns={"past_move_mean_8": "past_move"}).round({"p_big_move": 3, "past_move": 4})
-        upcoming = upcoming.drop(columns=["p_big_move", "past_move"]).merge(
-            scores[["ticker", "date", "p_big_move", "past_move"]], on=["ticker", "date"], how="left")
+        scores = scores.rename(columns={"past_move_mean_8": "past_move", "past_gap_mean_8": "past_gap"})
+        scores = scores.round({"p_big_move": 3, "p_big_gap": 3, "past_move": 4, "past_gap": 4})
+        upcoming = upcoming.drop(columns=score_cols).merge(
+            scores[["ticker", "date", *score_cols]], on=["ticker", "date"], how="left")
     upcoming = upcoming.sort_values(["date", "mcap_m"], ascending=[True, False])
 
     cols = ["ticker", "company", "sector", "industry", "mcap_m", "date", "session", "eps_est",
-            "p_big_move", "past_move", "top"]
+            *score_cols, "top"]
     # Reports already made this quarter move from "upcoming" to "reported" once their
     # reaction session has closed.
     past = earnings[(all_ts >= quarter.start_time.tz_localize(TZ)) & (all_ts < pd.Timestamp.now(tz=TZ))]

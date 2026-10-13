@@ -6,3 +6,6 @@ __pycache__/
 
 # Raw pulls are large; rebuild with collect_data.py
 data/
+
+# Built by build_calendar.py; the refresh job builds a fresh copy before publishing
+app/calendar_data.js

@@ -36,7 +36,7 @@ uv run build_calendar.py                      # refresh app/calendar_data.js
 python3 -m http.server 8765 --directory app   # http://localhost:8765/calendar.html
 ```
 
-The calendar shows this quarter's upcoming reports in month and week views, with the move-size model's chance of a 5%+ move for each company. Clicking a date lists the companies reporting. `app/calendar.html` also opens directly as a file.
+The calendar shows this quarter's upcoming reports in month and week views, with the move-size models' chance of a 5%+ move for each company, both by the close of the reaction session and at its open. Clicking a date lists the companies reporting. `app/calendar.html` also opens directly as a file.
 
 ## Hosted calendar
 
@@ -44,7 +44,6 @@ The `app/` folder is published to GitHub Pages at
 https://skim-miks.github.io/earnings_data_predictions/ and can be added to a
 phone's home screen (Safari: Share, then Add to Home Screen).
 
-- `.github/workflows/pages.yml` publishes `app/` whenever it changes on `main`.
 - `collect_snapshot.py` saves one file per day of analyst ratings, price targets, estimate
   trends and revisions, short interest, insider activity and the options-implied move for
   companies reporting within two weeks. Yahoo only serves current values for these, so the
@@ -57,5 +56,5 @@ phone's home screen (Safari: Share, then Add to Home Screen).
 - `.github/workflows/refresh.yml` runs on weekdays after the US close: it re-pulls
   prices, company profiles and earnings (only companies reporting within two weeks
   or that just reported; every company on Fridays), takes the daily snapshot, rebuilds the dataset, retrains the
-  move-size model, rebuilds the calendar data and publishes it. It can also be
-  started by hand from the Actions tab.
+  move-size model, rebuilds the calendar data and publishes it. It also runs when the app or
+  pipeline code changes on `main`, and can be started by hand from the Actions tab.

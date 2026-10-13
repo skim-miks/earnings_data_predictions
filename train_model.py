@@ -1,4 +1,8 @@
-"""Move-size model: chance that a stock moves 5% or more, in either direction, on its earnings reaction.
+"""Move-size models: chance that a stock moves 5% or more, in either direction, on its earnings reaction.
+
+Two versions are trained on the same kind of inputs:
+  - by the close: last close before the report -> close of the reaction session (`target_raw`)
+  - at the open:  last close before the report -> open of the reaction session (`target_gap`)
 
 Usage:
     uv run build_dataset.py
@@ -8,7 +12,7 @@ Prints an out-of-time evaluation (train on earlier years, test on each of
 2022-2026), then fits on all history and scores the upcoming reports into
 data/processed/upcoming_scores.parquet for the calendar.
 
-The model says how big the move is likely to be. It does not predict direction.
+The models say how big the move is likely to be. They do not predict direction.
 """
 
 import numpy as np
@@ -20,7 +24,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from build_dataset import BIG_MOVE, PAST_MOVE_FEATURES, PEER_FEATURES
+from build_dataset import BIG_MOVE, PAST_GAP_FEATURES, PAST_MOVE_FEATURES, PEER_FEATURES, PEER_GAP_FEATURES
 from build_dataset import OUT as EVENTS
 from collect_data import PREDICTIONS, report_time
 
@@ -29,7 +33,11 @@ TEST_YEARS = [2022, 2023, 2024, 2025, 2026]
 # Chosen in experiments/feature_groups.py: the stock's own past earnings moves, its
 # volatility, how peers moved this season, and sector. EPS, momentum and market
 # features added nothing for move size.
-NUM = [*PAST_MOVE_FEATURES, "vol_1m", "vol_3m", "vol_1y", "vol_1m_vs_3m", "vol_1m_vs_1y", *PEER_FEATURES]
+VOL = ["vol_1m", "vol_3m", "vol_1y", "vol_1m_vs_3m", "vol_1m_vs_1y"]
+NUM = [*PAST_MOVE_FEATURES, *VOL, *PEER_FEATURES]
+# The open (gap) model uses the same inputs with history and peers measured on past gaps
+# (experiments/gap_target.py).
+GAP_NUM = [*PAST_GAP_FEATURES, *VOL, *PEER_GAP_FEATURES]
 CAT = ["Sector"]
 CLIP = (0.005, 0.995)   # per-feature quantile clip, fit on train
 
@@ -59,29 +67,33 @@ def make_model(num: list[str]) -> Pipeline:
     ])
 
 
-def fit_predict(train: pd.DataFrame, test: pd.DataFrame, num: list[str]) -> np.ndarray:
+def fit_predict(train: pd.DataFrame, test: pd.DataFrame, num: list[str], target: str = "target_raw") -> np.ndarray:
     clip = Clipper(num).fit(train)
-    y = (train["target_raw"].abs() >= BIG_MOVE).astype(int)
+    y = (train[target].abs() >= BIG_MOVE).astype(int)
     model = make_model(num).fit(clip.transform(train), y)
     return model.predict_proba(clip.transform(test))[:, 1]
 
 
-def out_of_time(hist: pd.DataFrame, num: list[str]) -> pd.Series:
+def out_of_time(hist: pd.DataFrame, num: list[str], target: str = "target_raw") -> pd.Series:
     year = hist["earnings_date"].dt.year
     prob = pd.Series(np.nan, index=hist.index)
     for test_year in TEST_YEARS:
-        prob[year == test_year] = fit_predict(hist[year < test_year], hist[year == test_year], num)
+        prob[year == test_year] = fit_predict(hist[year < test_year], hist[year == test_year], num, target)
     return prob
 
 
-def report(hist: pd.DataFrame, prob: pd.Series, label: str) -> None:
+def report(hist: pd.DataFrame, prob: pd.Series, label: str, target: str = "target_raw") -> None:
     scored = prob.notna()
-    big = hist.loc[scored, "target_raw"].abs() >= BIG_MOVE
-    p = prob[scored]
-    by_year = [roc_auc_score(big[hist.loc[scored, "earnings_date"].dt.year == y],
-                             p[hist.loc[scored, "earnings_date"].dt.year == y]) for y in TEST_YEARS]
+    move = hist.loc[scored, target].abs()
+    big, p = move >= BIG_MOVE, prob[scored]
+    year = hist.loc[scored, "earnings_date"].dt.year
+    by_year = [roc_auc_score(big[year == y], p[year == y]) for y in TEST_YEARS]
     print(f"{label}: AUC {np.mean(by_year):.3f} (by year {', '.join(f'{a:.3f}' for a in by_year)}), "
           f"PR-AUC {average_precision_score(big, p):.3f}, base rate {big.mean():.3f}")
+    table = pd.DataFrame({"predicted": p, "actual": big, "median_move": move})
+    table["decile"] = pd.qcut(table["predicted"], 10, labels=False) + 1
+    print(table.groupby("decile").agg(predicted=("predicted", "mean"), actual=("actual", "mean"),
+                                      median_move=("median_move", "median")).round(3).iloc[[0, 4, 9]].to_string())
 
 
 if __name__ == "__main__":
@@ -89,26 +101,21 @@ if __name__ == "__main__":
     df = df[df["lead"] == 1].replace([np.inf, -np.inf], np.nan).reset_index(drop=True)
     df["earnings_date"] = pd.to_datetime(df["earnings_date"])
     hist, upcoming = df[~df["upcoming"]], df[df["upcoming"]]
-    num = NUM
+    models = {"p_big_move": ("by the close", NUM, "target_raw"), "p_big_gap": ("at the open", GAP_NUM, "target_gap")}
 
     print(f"Out-of-time test, {TEST_YEARS[0]}-{TEST_YEARS[-1]}: move of {BIG_MOVE:.0%} or more in either direction")
-    prob = out_of_time(hist, num)
-    report(hist, prob, f"{len(NUM) + len(CAT)} features")
+    for col, (label, num, target) in models.items():
+        rows = hist.dropna(subset=[target])
+        report(rows, out_of_time(rows, num, target), label, target)
+        upcoming = upcoming.assign(**{col: fit_predict(rows, upcoming, num, target)})
 
-    scored = prob.notna()
-    table = pd.DataFrame({"predicted": prob[scored], "big_move": hist.loc[scored, "target_raw"].abs() >= BIG_MOVE,
-                          "abs_move": hist.loc[scored, "target_raw"].abs()})
-    table["decile"] = pd.qcut(table["predicted"], 10, labels=False) + 1
-    print("\nPredicted vs actual by score decile:")
-    print(table.groupby("decile").agg(predicted=("predicted", "mean"), actual=("big_move", "mean"),
-                                      median_abs_move=("abs_move", "median")).round(3).to_string())
-
-    upcoming = upcoming.assign(p_big_move=fit_predict(hist, upcoming, num))
-    upcoming[["ticker", "earnings_date", "p_big_move", "past_move_mean_8", "past_move_last", "feature_date"]].to_parquet(SCORES, index=False)
+    upcoming[["ticker", "earnings_date", "p_big_move", "p_big_gap", "past_move_mean_8", "past_gap_mean_8",
+              "past_move_last", "feature_date"]].to_parquet(SCORES, index=False)
     # Track record: keep the latest prediction made before each report. Rows for reports
     # still ahead are replaced on every run; once a report has happened its row is frozen.
     now = pd.Timestamp.now(tz="America/New_York").tz_localize(None)
-    new = upcoming[["ticker", "earnings_date", "report_timing", "feature_date", "p_big_move", "past_move_mean_8"]].copy()
+    new = upcoming[["ticker", "earnings_date", "report_timing", "feature_date", "p_big_move", "p_big_gap",
+                    "past_move_mean_8"]].copy()
     new = new[report_time(new["earnings_date"], new["report_timing"]) > now]
     new["earnings_date"] = new["earnings_date"].dt.strftime("%Y-%m-%d")
     new["feature_date"] = pd.to_datetime(new["feature_date"]).dt.strftime("%Y-%m-%d")
@@ -118,4 +125,4 @@ if __name__ == "__main__":
         new = pd.concat([old[report_time(old["earnings_date"], old["report_timing"]) <= now], new], ignore_index=True)
     new.to_parquet(PREDICTIONS, index=False)
     print(f"\nScored {len(upcoming)} upcoming reports -> {SCORES}")
-    print(upcoming["p_big_move"].describe().round(3).to_string())
+    print(upcoming[["p_big_move", "p_big_gap"]].describe().round(3).loc[["mean", "25%", "50%", "75%", "max"]].to_string())

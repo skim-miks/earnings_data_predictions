@@ -118,7 +118,7 @@
   .summary { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
   .summary h2 { font-size: 15px; margin: 0 0 2px; }
   .summary .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
-  .summary table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .summary table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 6px; }
   .summary th, .summary td { text-align: right; padding: 4px 6px; border-top: 1px solid var(--line); }
   .summary th:first-child, .summary td:first-child { text-align: left; }
   .summary th { color: var(--muted); font-weight: 500; font-size: 12px; border-top: 0; }
@@ -210,7 +210,7 @@ const DATA = window.EARNINGS_CALENDAR || { events: [], generated: "never" };
 const MAX_CHIPS = 8;
 const HOT = 0.6;   // chance of a 5%+ move at which a company is flagged
 let detailSort = "mcap", detailKey = null;
-const hot = e => e.p_big_move != null && e.p_big_move >= HOT ? " hot" : "";
+const hot = e => Math.max(e.p_big_move ?? 0, e.p_big_gap ?? 0) >= HOT ? " hot" : "";
 const pct = (v, d = 0) => `${(v * 100).toFixed(d)}%`;
 const SESSIONS = ["bmo", "during", "amc"];
 const SESSION_LABEL = { bmo: "Before open", amc: "After close", during: "During session" };
@@ -244,7 +244,8 @@ function saveWatch() {
 const ITEMS = [...(DATA.reported || []), ...DATA.events];
 const done = e => e.actual != null;
 const dir = e => e.actual > 0 ? "up" : e.actual < 0 ? "down" : "";
-const signedMove = e => `${e.actual > 0 ? "+" : ""}${(e.actual * 100).toFixed(1)}%`;
+const signedPctText = v => `${v > 0 ? "+" : ""}${(v * 100).toFixed(1)}%`;
+const signedMove = e => signedPctText(e.actual);
 const chipClass = e => done(e) ? `chip done ${dir(e)}${Math.abs(e.actual) >= 0.05 ? " bigmove" : ""}` : `chip ${e.session}${hot(e)}`;
 const chipTitle = e => done(e) ? `${e.company}: ${signedMove(e)}` : e.company;
 
@@ -311,23 +312,28 @@ function renderResults() {
       `Each night's predictions are saved, and a report appears here once its reaction session has closed.</div></div>`;
     return;
   }
-  const buckets = [["Under 30%", r => r.p_big_move < 0.3], ["30% to 60%", r => r.p_big_move >= 0.3 && r.p_big_move < HOT],
-                   ["60% or more (flagged)", r => r.p_big_move >= HOT]];
-  const rows = buckets.map(([label, test]) => {
-    const g = list.filter(test), big = g.filter(r => Math.abs(r.actual) >= BIG).length;
-    const avg = g.reduce((a, r) => a + Math.abs(r.actual), 0) / (g.length || 1);
-    return `<tr><td>${label}</td><td>${g.length}</td><td>${g.length ? `${big} (${pct(big / g.length)})` : "–"}</td>` +
-      `<td>${g.length ? "±" + pct(avg, 1) : "–"}</td></tr>`;
-  }).join("");
+  const buckets = [["Under 30%", p => p < 0.3], ["30% to 60%", p => p >= 0.3 && p < HOT], ["60% or more", p => p >= HOT]];
+  const table = (title, pKey, actualKey) => {
+    const scored = list.filter(r => r[pKey] != null && r[actualKey] != null);
+    if (!scored.length) return "";
+    const rows = buckets.map(([label, test]) => {
+      const g = scored.filter(r => test(r[pKey])), big = g.filter(r => Math.abs(r[actualKey]) >= BIG).length;
+      const avg = g.reduce((a, r) => a + Math.abs(r[actualKey]), 0) / (g.length || 1);
+      return `<tr><td>${label}</td><td>${g.length}</td><td>${g.length ? `${big} (${pct(big / g.length)})` : "–"}</td>` +
+        `<td>${g.length ? "±" + pct(avg, 1) : "–"}</td></tr>`;
+    }).join("");
+    return `<table><tr><th>${title} (${scored.length} reports)</th><th>Reports</th><th>Moved ${pct(BIG)}+</th><th>Average move</th></tr>${rows}</table>`;
+  };
   const withOpt = list.filter(r => r.implied_move != null);
   const mean = (g, f) => g.reduce((a, r) => a + f(r), 0) / g.length;
   const first = list[list.length - 1].reaction_date;
   let html = `<div class="summary"><h2>Track record</h2><div class="sub">${list.length} reports since ${shortDate(first)}. ` +
-    `A "big move" is ${pct(BIG)} or more in either direction.</div>` +
-    `<table><tr><th>Model's chance of a big move</th><th>Reports</th><th>Moved ${pct(BIG)}+</th><th>Average move</th></tr>${rows}</table>` +
+    `A "big move" is ${pct(BIG)} or more in either direction, measured from the last close before the report.</div>` +
+    table("Model's chance by the close", "p_big_move", "actual") +
+    table("Model's chance at the open", "p_big_gap", "actual_gap") +
     (withOpt.length ? `<div class="note">Options (${withOpt.length} reports): implied ±${pct(mean(withOpt, r => r.implied_move), 1)} on average, ` +
-      `actual ±${pct(mean(withOpt, r => Math.abs(r.actual)), 1)}.</div>` : "") +
-    (list.length < 100 ? `<div class="note">Too few reports so far to judge the model; this fills in through earnings season.</div>` : "") + `</div>`;
+      `actual ±${pct(mean(withOpt, r => Math.abs(r.actual)), 1)} by the close.</div>` : "") +
+    (list.length < 100 ? `<div class="note">Too few reports so far to judge the models; this fills in through earnings season.</div>` : "") + `</div>`;
   let day = null;
   for (const r of list) {
     if (r.reaction_date !== day) {
@@ -336,10 +342,11 @@ function renderResults() {
     }
     const big = Math.abs(r.actual) >= BIG;
     html += `<div class="rrow"><span class="chip ${r.session}${r.p_big_move >= HOT ? " hot" : ""}">${r.ticker}</span>` +
-      `<div><div class="name">${r.company}</div><div class="meta">model ${pct(r.p_big_move)} chance of ±${pct(BIG)}` +
+      `<div><div class="name">${r.company}</div><div class="meta">model ${pct(r.p_big_move)} by close` +
+      (r.p_big_gap != null ? `, ${pct(r.p_big_gap)} at open` : "") +
       (r.implied_move != null ? ` · options ±${pct(r.implied_move, 1)}` : "") + ` · predicted ${shortDate(r.predicted_on)}</div></div>` +
       `<div class="actual"><span class="${r.actual > 0 ? "up" : r.actual < 0 ? "down" : ""}">${r.actual > 0 ? "+" : ""}${(r.actual * 100).toFixed(1)}%</span>` +
-      `<span class="tag">${big ? "big move" : "under " + pct(BIG)}</span></div></div>`;
+      `<span class="tag">${r.actual_gap != null ? "opened " + signedPctText(r.actual_gap) : ""}</span></div></div>`;
   }
   box.innerHTML = html;
 }
@@ -386,7 +393,7 @@ function render() {
   el("footer").textContent = `${events.filter(e => !done(e)).length} upcoming reports through the end of ${DATA.quarter}, ${events.filter(done).length} already reported. ` +
     `Dates from Yahoo Finance, pulled ${DATA.generated}. Largest ${DATA.top_n} ranked by market value as of ${DATA.caps_as_of}. ` +
     `Dates can move until a company confirms them. ` +
-    (DATA.scores_as_of ? `Move chances are a model estimate of a 5% or larger move in either direction, using prices through ${DATA.scores_as_of}; they say nothing about direction.` : "");
+    (DATA.scores_as_of ? `Move chances are model estimates of a 5% or larger move in either direction from the last close before the report: "by close" through the close of the next session, "at the open" to that session's open. They use prices through ${DATA.scores_as_of} and say nothing about direction.` : "");
 }
 
 // Analyst, estimate, short-interest, insider and options context from the daily snapshot.
@@ -429,10 +436,13 @@ function openDetail(key) {
       const eps = e.eps_est == null ? "" : `EPS est ${e.eps_est.toFixed(2)}`;
       const move = done(e) ?
         `<div class="move"><div class="p ${dir(e)}" title="Close-to-close move on ${e.reaction_date}, the first session after the report">${signedMove(e)} actual</div>` +
-        (e.p_big_move == null ? "" : `<div class="past" title="The model's last prediction before the report, made ${e.predicted_on}">model said ${pct(e.p_big_move)} chance of ±5%</div>`) +
+        (e.actual_gap == null ? "" : `<div class="past" title="Move from the last close before the report to the open of ${e.reaction_date}">opened ${signedPctText(e.actual_gap)}</div>`) +
+        (e.p_big_move == null ? "" : `<div class="past" title="The model's last prediction before the report, made ${e.predicted_on}">model said ${pct(e.p_big_move)} by close` +
+          (e.p_big_gap == null ? "" : `, ${pct(e.p_big_gap)} at open`) + `</div>`) +
         (e.implied_move == null ? "" : `<div class="past">options implied ±${pct(e.implied_move, 1)}</div>`) + `</div>` :
         e.p_big_move == null ? "" :
-        `<div class="move"><div class="p${hot(e)}" title="Model's chance of a 5% or larger move, up or down">${pct(e.p_big_move)} chance of ±5%</div>` +
+        `<div class="move"><div class="p${e.p_big_move >= HOT ? " hot" : ""}" title="Model's chance of a 5% or larger move, up or down, from the last close before the report to the close of the next session">${pct(e.p_big_move)} chance of ±5% by close</div>` +
+        (e.p_big_gap == null ? "" : `<div class="p${e.p_big_gap >= HOT ? " hot" : ""}" title="Model's chance that the stock opens 5% or more away from the last close before the report">${pct(e.p_big_gap)} at the open</div>`) +
         (e.past_move == null ? "" : `<div class="past" title="Average absolute move on its last 8 reports">past avg ±${pct(e.past_move, 1)}</div>`) +
         (e.ctx && e.ctx.implied_move != null ? `<div class="past" title="Move priced in by options through ${e.ctx.implied_expiry}">options imply ±${pct(e.ctx.implied_move, 1)}</div>` : "") + `</div>`;
       html += `<div class="row${e.ctx ? " has-ctx" : ""}" data-ctx="${e.ticker}"><span class="${done(e) ? chipClass(e) : "chip " + e.session}">${e.ticker}</span>` +
