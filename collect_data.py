@@ -265,6 +265,14 @@ def combine(min_tickers: int = 0) -> None:
     now = pd.Timestamp.now(tz="America/New_York")
     if now.hour * 60 + now.minute < 16 * 60 + 15:
         prices = prices[pd.to_datetime(prices["date"]) < now.tz_localize(None).normalize()]
+    # Yahoo sometimes leaves Adj Close empty on the latest session for a few hours after
+    # the close. Fill it from Close using the stock's most recent adjustment ratio.
+    prices = prices.sort_values(["ticker", "date"])
+    ratio = (prices["Adj Close"] / prices["Close"]).groupby(prices["ticker"]).ffill()
+    missing = prices["Adj Close"].isna() & prices["Close"].notna()
+    prices.loc[missing, "Adj Close"] = prices.loc[missing, "Close"] * ratio[missing]
+    if missing.any():
+        print(f"filled {int(missing.sum())} missing Adj Close values from Close")
     prices["date"] = pd.to_datetime(prices["date"]).dt.date
     prices = prices.sort_values(["ticker", "date"]).reset_index(drop=True)
     prices.to_parquet(RAW / "prices.parquet", index=False)

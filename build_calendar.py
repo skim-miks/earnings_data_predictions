@@ -70,6 +70,16 @@ def load_context() -> dict[str, dict]:
     return {r.pop("ticker"): r for r in records}
 
 
+def no_nan(value):
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: no_nan(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [no_nan(v) for v in value]
+    return value
+
+
 def load_reported(events: pd.DataFrame, universe: pd.DataFrame, top: set[str]) -> list[dict]:
     """Companies that have reported this quarter, with the stock's reaction and, where one
     was made, the model's latest prediction from before the report.
@@ -111,6 +121,9 @@ def load_reported(events: pd.DataFrame, universe: pd.DataFrame, top: set[str]) -
             base = react - 1
         if base < 0 or react >= len(dates) or (dates[react] - day) / np.timedelta64(1, "D") > 5:
             continue   # the reaction session has not closed yet
+        actual, actual_gap = adj[react] / adj[base] - 1, adj_open[react] / adj[base] - 1
+        if not np.isfinite(actual):
+            continue   # prices for the reaction session are not complete yet
         when = report_time(pd.Series([r.date]), pd.Series([r.session]))[0]
         pred = predictions.get((r.ticker, r.date))
         opts = implied[(implied["ticker"] == r.ticker) & (implied["earnings_date"] == r.date)
@@ -119,8 +132,8 @@ def load_reported(events: pd.DataFrame, universe: pd.DataFrame, top: set[str]) -
             "ticker": r.ticker, "company": names.at[r.ticker, "company"], "sector": names.at[r.ticker, "sector"],
             "mcap_m": names.at[r.ticker, "mcap_m"], "date": r.date, "session": r.session,
             "reaction_date": pd.Timestamp(dates[react]).strftime("%Y-%m-%d"),
-            "actual": round(float(adj[react] / adj[base] - 1), 4),             # by the close
-            "actual_gap": round(float(adj_open[react] / adj[base] - 1), 4),    # at the open
+            "actual": round(float(actual), 4),                                                   # by the close
+            "actual_gap": round(float(actual_gap), 4) if np.isfinite(actual_gap) else None,     # at the open
             "p_big_move": round(float(pred.p_big_move), 3) if pred else None,
             "p_big_gap": round(float(pred.p_big_gap), 3) if pred and pd.notna(getattr(pred, "p_big_gap", None)) else None,
             "predicted_on": pred.logged_at[:10] if pred else None,
@@ -192,7 +205,8 @@ def main() -> None:
         "reported": reported,
     }
     OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text("window.EARNINGS_CALENDAR = " + json.dumps(payload) + ";\n")
+    # NaN is not valid JSON and shows up as "NaN" in the page; write missing values as null.
+    OUT.write_text("window.EARNINGS_CALENDAR = " + json.dumps(no_nan(payload), allow_nan=False) + ";\n")
     print(f"{sum(r['ctx'] is not None for r in records)} with analyst/options context")
     print(f"{len(reported)} reported this quarter, {sum(r['p_big_move'] is not None for r in reported)} with a prediction on record")
     print(f"{len(records)} upcoming events for {upcoming['ticker'].nunique()} companies "
