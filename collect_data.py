@@ -203,9 +203,16 @@ def collect_profiles() -> None:
             profiles.append(profile)
     df = pd.DataFrame(profiles)
     df["as_of"] = pd.Timestamp.now().strftime("%Y-%m-%d")
+    fresh = len(df)
+    # On a bad night Yahoo returns empty profiles for many companies. Keep the last good
+    # profile for those instead of dropping them; `as_of` shows how old each one is.
+    if PROFILES.exists():
+        previous = pd.read_parquet(PROFILES)
+        previous = previous[previous["ticker"].isin(tickers) & ~previous["ticker"].isin(df["ticker"])]
+        df = pd.concat([df, previous], ignore_index=True)
     RAW.mkdir(parents=True, exist_ok=True)
     df.to_parquet(PROFILES, index=False)
-    print(f"profiles for {len(df)} of {len(tickers)} tickers")
+    print(f"profiles for {len(df)} of {len(tickers)} tickers ({fresh} fresh today, {len(df) - fresh} kept from earlier)")
 
 
 def collect_analysts(refresh: bool, pause: float) -> None:

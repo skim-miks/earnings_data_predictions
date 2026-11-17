@@ -145,8 +145,9 @@ def collect(within_days: int) -> None:
     df.to_parquet(out, index=False)
     filled = df.drop(columns=["ticker", "snapshot_date", "snapshot_ts", "earnings_date"]).notna().mean().round(2)
     print(f"{len(df)} rows -> {out}")
-    print("share filled:", filled[["price", "rating_mean", "eps_est_now", "eps_rev_up_30d", "short_pct_float",
-                                   "insider_net_shares_6m"] + (["implied_move"] if "implied_move" in filled else [])].to_dict())
+    # A block Yahoo refused for every ticker leaves its columns out entirely.
+    print("share filled:", filled.reindex(["price", "rating_mean", "eps_est_now", "eps_rev_up_30d", "short_pct_float",
+                                           "insider_net_shares_6m", "implied_move"]).fillna(0).to_dict())
 
 
 if __name__ == "__main__":

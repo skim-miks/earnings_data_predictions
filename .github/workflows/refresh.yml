@@ -59,11 +59,10 @@ jobs:
           else
             uv run collect_data.py earnings --within-days 14
           fi
-      - run: uv run collect_data.py profiles
       # Analyst, estimate, short-interest and options data for companies reporting soon.
       # Yahoo only serves current values, so each day's file is kept on the snapshots
       # branch to build a history. A failure here does not stop the refresh.
-      - name: Restore earlier snapshots and predictions
+      - name: Restore earlier snapshots, predictions and company profiles
         run: |
           git fetch origin snapshots:snapshots || true
           if git show-ref --quiet refs/heads/snapshots; then
@@ -74,6 +73,10 @@ jobs:
           mkdir -p data/snapshots ../snapshots/daily
           cp ../snapshots/daily/*.parquet data/snapshots/ 2>/dev/null || true
           cp ../snapshots/predictions.parquet data/predictions.parquet 2>/dev/null || true
+          mkdir -p data/raw
+          cp ../snapshots/universe.parquet data/raw/universe.parquet 2>/dev/null || true
+      # Profiles Yahoo skips tonight fall back to the last good ones restored above.
+      - run: uv run collect_data.py profiles
       - name: Take today's snapshot
         continue-on-error: true
         run: uv run collect_snapshot.py --within-days 14
@@ -87,6 +90,7 @@ jobs:
         run: |
           cp data/snapshots/*.parquet ../snapshots/daily/ || true
           cp data/predictions.parquet ../snapshots/predictions.parquet || true
+          cp data/raw/universe.parquet ../snapshots/universe.parquet || true
           cd ../snapshots
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
