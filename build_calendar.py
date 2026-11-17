@@ -155,6 +155,9 @@ def main() -> None:
     ts = ts[upcoming.index]
     upcoming["date"] = ts.dt.strftime("%Y-%m-%d")
     upcoming["session"] = session(ts)
+    # Yahoo occasionally lists the same report twice (e.g. two timestamps on one day).
+    upcoming = upcoming.loc[~upcoming.duplicated(["ticker", "date"])]
+    ts = ts[upcoming.index]
 
     # Company details and size are current Yahoo values; the 2024 list only supplies tickers.
     f = load_universe().rename(columns={"Company": "company", "Sector": "sector", "Industry": "industry"})
